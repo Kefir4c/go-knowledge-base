@@ -73,6 +73,7 @@ func demBlockingSecond() {
 	time.Sleep(200 * time.Millisecond)
 }
 
+/*
 // Закрытие канала обязательно для range
 func demRangeWithoutClose() {
 	ch := make(chan int)
@@ -89,7 +90,7 @@ func demRangeWithoutClose() {
 	// 	fmt.Println(value)
 	// }
 }
-
+*/
 /*
 Подводные камни данного блока:
 Отправка в закрытий канал == panic
@@ -169,6 +170,7 @@ func demBufferUsage() {
 }
 
 // Ошибочное использование направленных каналов
+/*
 func demDirectedChannelError() {
 	ch := make(chan string)
 
@@ -178,6 +180,7 @@ func demDirectedChannelError() {
 	}(ch)
 	ch <- "Hello"
 }
+*/
 
 /*
 Подводные камни:
@@ -187,7 +190,7 @@ func demDirectedChannelError() {
 Недостаточный буфер → блокировки
 */
 
-//RANGE, SELECT И ПАТТЕРНЫ
+//RANGE, SELECT
 /*
 RANGE ПО КАНАЛАМ:
 - Позволяет получать данные из канала до его закрытия
@@ -197,9 +200,84 @@ SELECT:
 - Позволяет ожидать несколько операций с каналами
 - Реализует неблокирующую синхронизацию
 - Может использоваться с таймаутами
-
-ПАТТЕРНЫ:
-- Worker Pool
-- Pipeline
-- Таймауты и отмена
 */
+// RANGE
+
+// Range по каналу до закрытия
+func demRange() {
+	ch := make(chan int)
+
+	// Горутина отправляет данные и закрывает канал
+	go func() {
+		for i := 0; i < 5; i++ {
+			ch <- i
+		}
+		close(ch)
+	}()
+
+	for value := range ch {
+		fmt.Println("Received:", value)
+	}
+}
+
+// Range без закрытия канала блокируеться
+func demRangeWithoutClose() {
+	ch := make(chan int)
+
+	// Горутина отправляет данные
+	go func() {
+		for i := 0; i < 5; i++ {
+			ch <- i
+		}
+		// close(ch) // Закрытие не происходит
+	}()
+
+	// Range будет блокироваться навсегда
+	// for value := range ch {
+	// 	fmt.Println(value)
+	// }
+}
+
+//SELECT
+
+// Select с несколькими каналами
+func demSelect() {
+	ch1 := make(chan string)
+	ch2 := make(chan string)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		ch1 <- "from ch1"
+	}()
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		ch1 <- "from ch2"
+	}()
+
+	// Ожидаем первые готовые каналы
+	select {
+	case msg1 := <-ch1:
+		fmt.Println("Message 1:", msg1)
+	case msg2 := <-ch2:
+		fmt.Println("Message 1:", msg2)
+	default:
+		fmt.Println("No message received")
+	}
+}
+
+// Select с таймаутом
+func demSelectWithTimeout() {
+	ch := make(chan string)
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		ch <- "data"
+	}()
+
+	select {
+	case data := <-ch:
+		fmt.Println("Data received:", data)
+	case <-time.After(100 * time.Millisecond):
+		fmt.Println("timeout")
+	}
+}
