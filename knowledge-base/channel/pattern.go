@@ -1,8 +1,10 @@
 package channel
 
 import (
+	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Я решил вынести паттерны в отдельный файл :)
@@ -136,5 +138,262 @@ func pipelineBasic() {
 
 	for result := range square(gen(1, 2, 3, 4, 5)) {
 		fmt.Println(result)
+	}
+}
+
+/*
+PIPELINE — МНОГОЭТАПНЫЙ
+
+Фишки:
+- Несколько этапов подряд
+- Можно комбинировать любые трансформации
+*/
+
+func pipelineMultiStage() {
+	// Генератор
+	gen := func(nums ...int) <-chan int {
+		out := make(chan int)
+		go func() {
+			defer close(out)
+			for _, n := range nums {
+				out <- n
+			}
+		}()
+		return out
+	}
+
+	// Умножение на число
+	multiply := func(in <-chan int, factor int) <-chan int {
+		out := make(chan int)
+		go func() {
+			defer close(out)
+			for n := range in {
+				out <- n * factor
+			}
+		}()
+		return out
+	}
+
+	// Фильтр только для четных чисел
+	evenOnly := func(in <-chan int) <-chan int {
+		out := make(chan int)
+		go func() {
+			defer close(out)
+			for n := range in {
+				if n%2 == 0 {
+					out <- n
+				}
+			}
+		}()
+		return out
+	}
+
+	// Суммирование (накопление)
+	sum := func(in <-chan int) <-chan int {
+		out := make(chan int)
+		go func() {
+			defer close(out)
+			total := 0
+			for n := range in {
+				total += n
+			}
+			out <- total
+		}()
+		return out
+	}
+
+	// Цепочка: gen → multiply(2) → evenOnly → sum
+	numbers := gen(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+	multiplied := multiply(numbers, 2)
+	filtered := evenOnly(multiplied)
+	total := sum(filtered)
+
+	for result := range total {
+		fmt.Println("Сумма четных чисел ×2:", result)
+		// 2+4+6+8+10+12+14+16+18+20 = 110
+	}
+}
+
+/*
+PIPELINE — FAN-OUT / FAN-IN
+
+Когда использовать:
+- Один этап обработки очень медленный
+- Нужно распараллелить процесс на несколько горутин
+
+Суть:
+- Fan-out: разветвляем данные на N обработчиков
+- Fan-in: собираем результаты от всех обработчиков в один канал
+
+КЛЮЧЕВОЙ МОМЕНТ:
+Данные из numbers распределяются автоматически между worker1, worker2, worker3.
+Одно число попадает только в одного worker'а.
+За счет этого достигается параллелизм.
+
+Сравнение:
+- Без Fan-out: 10 операций по 1 сек = 10 сек
+- С Fan-out (3 worker): 10 операций распределяются на 3 worker'a ≈ 3-4 сек
+*/
+
+func pipelineFanOutFanIn() {
+	// Генератор (источник)
+	gen := func(nums ...int) <-chan int {
+		out := make(chan int)
+		go func() {
+			defer close(out)
+			for _, n := range nums {
+				out <- n
+			}
+		}()
+		return out
+	}
+	// Тяжелый обработчик (имитируем медленную операцию)
+	worker := func(id int, in <-chan int) <-chan int {
+		out := make(chan int)
+		go func() {
+			defer close(out)
+			for n := range in {
+				result := n * n
+				fmt.Printf("Worker %d обработал %d\n", id, n)
+				out <- result
+			}
+		}()
+		return out
+	}
+
+	// Fan-in: слияние нескольких каналов в один
+	merge := func(channels ...<-chan int) <-chan int {
+		out := make(chan int)
+		var wg sync.WaitGroup
+
+		for _, ch := range channels {
+			wg.Add(1)
+			go func(c <-chan int) {
+				defer wg.Done()
+				for val := range c {
+					out <- val
+				}
+			}(ch)
+		}
+
+		go func() {
+			wg.Wait()
+			close(out)
+		}()
+		return out
+	}
+
+	// Fan-out: запускаем 3 параллельных worker'а
+	numbers := gen(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+
+	worker1 := worker(1, numbers)
+	worker2 := worker(2, numbers)
+	worker3 := worker(3, numbers)
+
+	results := merge(worker1, worker2, worker3)
+
+	for result := range results {
+		fmt.Println("Результат:", result)
+	}
+}
+
+/*
+3. CONTEXT С ТАЙМАУТОМ
+
+ЗАЧЕМ ЭТО НУЖНО:
+- Любая операция может зависнуть (HTTP запрос, БД, чтение файла)
+- Без таймаута горутина будет висеть вечно → утечка памяти
+- Таймаут — это защита от "вечно висящих" операций
+
+ЧТО ТАКОЕ CONTEXT:
+- Стандартный способ управления временем жизни в Go
+- Несет с собой: дедлайны, таймауты, сигналы отмены
+- Передается в функции как первый аргумент (по конвенции)
+
+ПОЧЕМУ НУЖНО ВЫЗЫВАТЬ cancel() В defer:
+- Каждый WithTimeout/WithCancel создает внутреннюю структуру
+- Если не вызвать cancel — она будет висеть в памяти
+- Даже после завершения работы горутины ресурсы не освободятся
+- defer cancel() — ЗОЛОТОЕ ПРАВИЛО, запомни наизусть
+
+ЧТО ВОЗВРАЩАЕТ ctx.Err():
+- context.DeadlineExceeded — истек таймаут
+- context.Canceled — вызвали cancel() вручную
+- nil — контекст еще активен
+
+ФИШКИ И ПОДВОДНЫЕ КАМНИ:
+1. Background() — корневой контекст (пустой, никогда не отменяется)
+2. TODO() — когда не знаешь, какой контекст передать (временная заглушка)
+3. WithTimeout = WithDeadline + время от текущего момента
+4. Таймаут начинает тикать сразу с момента создания
+5. После cancel() канал ctx.Done() закрывается (можно читать бесконечно)
+
+КОГДА ИСПОЛЬЗУЕТСЯ НА ПРАКТИКЕ (реальные примеры):
+1. HTTP сервер: каждый запрос имеет свой контекст
+2. HTTP клиент: req, _ := http.NewRequestWithContext(ctx, ...)
+3. Запросы в БД: rows, _ := db.QueryContext(ctx, ...)
+4. Свои горутины: select { case <-ctx.Done(): return }
+*/
+
+func contextWithTimeout() {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	ch := make(chan string)
+
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		ch <- "Done"
+	}()
+
+	select {
+	case res := <-ch:
+		fmt.Println("Результат:", res)
+	case <-ctx.Done():
+		fmt.Println("Таймаут! Причина:", ctx.Err())
+	}
+}
+
+/*
+HEARTBEAT — КОГДА МОЖЕТ ПРИГОДИТЬСЯ:
+
+Реальный кейс:
+- Мониторинг долго работающих горутин
+- Проверка, не завис ли воркер
+- Graceful shutdown с ожиданием завершения
+
+ДЛЯ СОБЕСА:
+Не спрашивают, но если спросят "как проверить что горутина жива" — покажешь этот код.
+*/
+
+func heartbeatForMonitoring() {
+	heartbeat := make(chan struct{})
+
+	// Рабочая горутина с heartbeat
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				heartbeat <- struct{}{} // Живчик
+			default:
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case <-heartbeat:
+			fmt.Println("alive")
+		case <-ctx.Done():
+			fmt.Println("stopped")
+			return
+		}
 	}
 }
