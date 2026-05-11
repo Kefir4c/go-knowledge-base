@@ -5,14 +5,6 @@ import (
 	"unsafe"
 )
 
-// interface_interview_qa.go
-package main
-
-import (
-"fmt"
-"unsafe"
-)
-
 /*
 ЧАСТЫЕ ВОПРОСЫ ПО ИНТЕРФЕЙСАМ НА СОБЕСЕДОВАНИЯХ
 */
@@ -80,9 +72,9 @@ func demonstrateNilTrap() {
 */
 func demonstrateInterfaceSize() {
 	var i interface{} = 42
-	var s fmt.Stringer = "hello"
-	fmt.Printf("interface{} size: %d\n", unsafe.Sizeof(i))     // 16
-	fmt.Printf("Stringer size: %d\n", unsafe.Sizeof(s))        // 16
+	var s string = "hello"
+	fmt.Printf("interface{} size: %d\n", unsafe.Sizeof(i)) // 16
+	fmt.Printf("Stringer size: %d\n", unsafe.Sizeof(s))    // 16
 }
 
 // Q: Безопасны ли интерфейсы в горутинах?
