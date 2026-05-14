@@ -1,8 +1,11 @@
 package concurrency
 
 import (
+	"context"
 	"fmt"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -274,7 +277,7 @@ func ExampleSyncMap() {
 	}
 }
 
-// --- ПРИМЕР 7: Работа с "Race Detector" ---
+// --- ПРИМЕР 8: Работа с "Race Detector" ---
 /* Как обнаружить гонку? Go имеет встроенный инструмент.
 Запускай свои тесты или приложение так:
 $ go run -race main.go
@@ -304,3 +307,302 @@ Go выведет подробный отчет: где читали, где п�
    - Блокировки (кто кого ждет).
    - Использование CPU и памяти.
 */
+
+// ПРИМЕР 1: Паттерн Worker Pool (Классика)
+// Ограничиваем количество воркеров, чтобы не перегрузить систему.
+func worker(id int, jobs <-chan int, results chan<- int) {
+	for j := range jobs {
+		fmt.Printf("Воркер %d начал задачу %d\n", id, j)
+		time.Sleep(100 * time.Millisecond) // Имитация работы
+		results <- j * 2
+	}
+}
+
+func ExampleWorkerPool() {
+	const numJobs = 10
+	const numWorkers = 3
+
+	jobs := make(chan int, numJobs)
+	results := make(chan int, numJobs)
+
+	// Запускаем пул воркеров
+	for w := 1; w <= numWorkers; w++ {
+		go worker(w, jobs, results)
+	}
+
+	// Отправляем задачи
+	for j := 1; j <= numJobs; j++ {
+		jobs <- j
+	}
+	close(jobs) // Важно: закрываем, чтобы воркеры вышли из цикла range
+
+	// Собираем результаты
+	for a := 1; a <= numJobs; a++ {
+		<-results
+	}
+}
+
+// ПРИМЕР 2: Fan-Out / Fan-In (Конвейер)
+func producer(nums ...int) <-chan int {
+	out := make(chan int)
+	go func() {
+		for _, n := range nums {
+			out <- n
+		}
+		close(out)
+	}()
+	return out
+}
+
+func square(in <-chan int) <-chan int {
+	out := make(chan int)
+	go func() {
+		for n := range in {
+			out <- n * n
+		}
+		close(out)
+	}()
+	return out
+}
+
+func merge(cs ...<-chan int) <-chan int {
+	var wg sync.WaitGroup
+	out := make(chan int)
+
+	output := func(c <-chan int) {
+		for n := range c {
+			out <- n
+		}
+		wg.Done()
+	}
+
+	wg.Add(len(cs))
+	for _, c := range cs {
+		go output(c)
+	}
+
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
+}
+
+func exampleFanInFanOut() {
+	in := producer(1, 2, 3, 4)
+
+	// Fan-out: распределяем работу на два воркера
+	c1 := square(in)
+	c2 := square(in)
+
+	// Fan-in: собираем результаты в один канал
+	for n := range merge(c1, c2) {
+		fmt.Println("Результат:", n)
+	}
+}
+
+// ПРИМЕР 3: Паттерн Semaphore (Ограничение ресурсов)
+// Если не нужен полноценный Worker Pool, можно использовать буферизированный канал как семафор.
+func exampleSemaphore() {
+	maxConcurrency := 5
+	semaphore := make(chan struct{}, maxConcurrency)
+
+	for i := 0; i < 20; i++ {
+		go func(id int) {
+			semaphore <- struct{}{}        // Занимаем слот
+			defer func() { <-semaphore }() // Освобождаем слот
+
+			fmt.Printf("Процесс %d выполняется...\n", id)
+			time.Sleep(time.Second)
+		}(i)
+	}
+}
+
+// ПРИМЕР 4: Паттерн Pipeline (Трубопровод)
+// Разделение сложной задачи на этапы, каждый в своей горутине.
+func examplePipeline() {
+	// stage 1: генерация
+	nums := producer(2, 3, 4, 5)
+	// stage 2: возведение в квадрат
+	squares := square(nums)
+	// stage 3: вывод
+	for res := range squares {
+		fmt.Println(res)
+	}
+}
+
+// ПРИМЕР 5: Проверка утечек через runtime.NumGoroutine()
+func exampleCheckLeaks() {
+	fmt.Println("Горутин до:", runtime.NumGoroutine())
+
+	go func() {
+		ch := make(chan int)
+		<-ch // Горутина зависнет здесь навсегда (утечка!)
+	}()
+	time.Sleep(time.Millisecond * 10)
+	fmt.Println("Горутин после:", runtime.NumGoroutine())
+}
+
+// ПРИМЕР 6: Использование pprof
+/*
+Для отладки в реальном времени:
+1. Импортируем _ "net/http/pprof"
+2. Запускаем HTTP сервер: go func() { http.ListenAndServe("localhost:6060", nil) }()
+3. В терминале:
+   $ go tool pprof http://localhost:6060/debug/pprof/goroutine
+   $ (pprof) top
+   $ (pprof) list myFunc
+*/
+
+// 4. ПОД КАПОТОМ, ATOMIC & CONTEXT (
+/*
+ТЕОРЕТИЧЕСКАЯ СПРАВКА:
+
+1. ВНУТРЕННЕЕ УСТРОЙСТВО ГОРУТИН:
+   - Stack: Горутина начинает с 2 КБ. Если стек растет, Go выделяет новый
+     участок памяти и КОПИРУЕТ туда стек. Это эффективнее, чем фиксированные
+     8 МБ у потоков ОС.
+   - States: Горутина может быть в состояниях: _Gidle, _Grunnable, _Grunning,
+     _Gsyscall, _Gwaiting.
+
+2. ПЛАНИРОВЩИК (SCHEDULER):
+   - Syscall handling: Если горутина делает блокирующий системный вызов,
+     планировщик отсоединяет поток M от процессора P и создает новый поток M,
+     чтобы остальные горутины не простаивали.
+   - Netpoller: Для сетевых вызовов Go использует epoll/kqueue, чтобы не
+     плодить системные потоки.
+
+3. ПАКЕТ ATOMIC:
+   Использует инструкции процессора (CAS - Compare-And-Swap) для изменения
+   памяти без мьютексов. Это на порядок быстрее мьютекса, так как нет
+   переключения контекста и блокировок.
+
+4. CONTEXT:
+   Инструмент для иерархического управления горутинами. Если "голова" (запрос)
+   отменяется, все "хвосты" (запросы в БД, API) должны мгновенно завершиться.
+*/
+
+// ПРИМЕР 1: Atomic операции (Высокая производительность)
+// Мьютекс слишком дорог для простого счетчика. Используем атомики.
+func exampleAtomic() {
+	var (
+		counter int64
+		wg      sync.WaitGroup
+	)
+	for i := 0; i < 1000; i++ {
+		wg.Add(1)
+		go func() {
+			atomic.AddInt64(&counter, 1) // Атомарная инкрементация на уровне CPU
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	fmt.Println("Atomic counter:", atomic.LoadInt64(&counter))
+}
+
+// ПРИМЕР 2: Context with Timeout (Защита ресурсов)
+// Если база данных тормозит, мы не хотим ждать вечно.
+func exampleContextTimeout() {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel() // Всегда вызывай cancel для очистки ресурсов!
+
+	resCh := make(chan string)
+
+	go func() {
+		// Имитируем долгий запрос в БД
+		time.Sleep(1 * time.Second)
+		resCh <- "data from db"
+	}()
+
+	select {
+	case res := <-resCh:
+		fmt.Println("Успех:", res)
+	case <-ctx.Done():
+		fmt.Println("Ошибка:", ctx.Err()) // Напечатает context deadline exceeded
+	}
+}
+
+// ПРИМЕР 3: Context Propagation (Проброс по слоям)
+// Правильный паттерн: передавай ctx первым аргументом во все функции.
+func serviceCall(ctx context.Context) {
+	// Мы можем проверить, не отменен ли запрос выше по дереву
+	select {
+	case <-time.After(100 * time.Millisecond):
+		fmt.Println("Запрос выполнен")
+	case <-ctx.Done():
+		fmt.Println("Сервис: запрос отменен, прекращаю работу")
+	}
+}
+
+// ПРИМЕР 4: Паттерн "Or-Done Channel"
+// Позволяет объединить несколько каналов отмены в один.
+func or(channels ...chan interface{}) <-chan interface{} {
+	switch len(channels) {
+	case 0:
+		return nil
+	case 1:
+		return channels[0]
+	}
+
+	orDone := make(chan interface{})
+	go func() {
+		defer close(orDone)
+		switch len(channels) {
+		case 2:
+			select {
+			case <-channels[0]:
+			case <-channels[1]:
+			}
+		default:
+			select {
+			case <-channels[0]:
+			case <-channels[1]:
+			case <-or(append(channels[3:], orDone)...):
+			}
+		}
+	}()
+	return orDone
+}
+
+// ПРИМЕР 5: Spinlock на базе Atomic (Экспертно)
+// В редких случаях, когда ожидание ОЧЕНЬ короткое, мьютекс медленнее цикла.
+type spinlock struct {
+	state int32
+}
+
+func (s *spinlock) Lock() {
+	for !atomic.CompareAndSwapInt32(&s.state, 0, 1) {
+		// "Крутимся" в цикле, пока не захватим (активное ожидание)
+		// В реальности в Go лучше использовать Mutex, так как он умеет в spin-lock
+		// на первых итерациях, а потом усыпляет горутину.
+	}
+}
+
+func (s *spinlock) Unlock() {
+	atomic.StoreInt32(&s.state, 0)
+}
+
+// ПРИМЕР 6: Продвинутая синхронизация через sync.Cond
+// Используется, когда горутинам нужно ждать какого-то события (не данных).
+func ExampleSyncCond() {
+	mu := &sync.Mutex{}
+	cond := sync.NewCond(mu)
+	ready := false
+
+	for i := 0; i < 3; i++ {
+		go func(id int) {
+			cond.L.Lock()
+			for !ready {
+				cond.Wait() // Ждем сигнала, отпуская мьютекс
+			}
+			fmt.Printf("Воркер %d погнал!\n", id)
+			cond.L.Unlock()
+		}(i)
+	}
+
+	time.Sleep(time.Second)
+	mu.Lock()
+	ready = true
+	mu.Unlock()
+	cond.Broadcast() // Будим ВСЕХ сразу
+}
