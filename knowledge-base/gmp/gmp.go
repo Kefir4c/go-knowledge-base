@@ -522,7 +522,7 @@ func exampleTrace() {
 	fmt.Println("Для анализа введи команду: go tool trace app.trace")
 }
 
-// 4. ЭКСПЕРТНЫЙ GMP: СТРАТЕГИИ, ДЕДЛОКИ И HIGH-PERFORMANCE (GRADE 4 - ARCHITECT)
+// 4. ЭКСПЕРТНЫЙ GMP: СТРАТЕГИИ, ДЕДЛОКИ И HIGH-PERFORMANCE
 /*
 ТЕОРЕТИЧЕСКАЯ СПРАВКА:
 
