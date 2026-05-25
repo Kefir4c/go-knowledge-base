@@ -1,0 +1,45 @@
+package main
+
+func main() {
+
+}
+
+func isAnagram(s string, t string) bool {
+	if len(s) != len(t) {
+		return false
+	}
+
+	arr := make(map[rune]int, len(s))
+
+	for _, char := range s {
+		arr[char]++
+	}
+
+	for _, char := range t {
+		arr[char]--
+
+		if arr[char] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func isAnagram(s string, t string) bool {
+	if len(s) != len(t) {
+		return false
+	}
+
+	var counts [26]int
+	for i := 0; i < len(s); i++ {
+		counts[s[i]-'a']++
+		counts[t[i]-'a']--
+	}
+
+	for _, c := range counts {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
