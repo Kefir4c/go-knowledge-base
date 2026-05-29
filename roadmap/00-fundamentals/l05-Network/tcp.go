@@ -30,7 +30,7 @@ func main() {
 
 }
 
-func mainServer() {
+func mainServerTCP() {
 	// определяем порт для прослушивания
 	const PORT = ":9090"
 	listener, err := net.Listen("tcp", PORT)
@@ -82,7 +82,7 @@ func handleRequest(conn net.Conn) {
 	}
 }
 
-func mainClient() {
+func mainClientTCP() {
 	// соединяемся с сервером
 	conn, err := net.Dial("tcp", "localhost:9090")
 	if err != nil {
