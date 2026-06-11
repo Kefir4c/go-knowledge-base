@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/time/rate"
 )
 
 /*
@@ -411,4 +415,248 @@ func heartbeatForMonitoring() {
 			return
 		}
 	}
+}
+
+/*
+4. SEMAPHORE (СЕМАФОР) ЧЕРЕЗ BUFFERED CHANNEL
+
+ПРОБЛЕМА:
+  - Нужно ограничить количество ОДНОВРЕМЕННО выполняющихся операций.
+  - Пример: не более 5 параллельных запросов к внешнему API.
+
+РЕШЕНИЕ:
+  - Буферизированный канал с ёмкостью = максимальное число операций.
+  - Перед операцией: канал <- struct{}{} (занимаем слот).
+  - После операции: <-канал (освобождаем слот).
+
+ОТЛИЧИЕ ОТ WORKER POOL:
+  - Worker Pool: фиксированное число ГОРУТИН, задачи в очереди.
+  - Semaphore: фиксированное число ОПЕРАЦИЙ, горутин может быть много.
+*/
+
+func semaphoreExample() {
+	const (
+		maxConcurrent = 3  // максимум 3 параллельные операции
+		totalTasks    = 10 // всего 10 задач
+	)
+
+	sem := make(chan struct{}, maxConcurrent) // семафор
+	var wg sync.WaitGroup
+
+	for i := 0; i < totalTasks; i++ {
+		wg.Add(1)
+		go func(taskID int) {
+			defer wg.Done()
+
+			sem <- struct{}{}        // захватываем слот (блокируется, если все заняты)
+			defer func() { <-sem }() // освобождаем слот
+
+			// имитация работы
+			fmt.Printf("Semaphore: Task %d is running\n", taskID)
+			time.Sleep(500 * time.Millisecond)
+		}(i)
+	}
+
+	wg.Wait()
+	fmt.Println("Semaphore: All tasks completed")
+}
+
+/*
+5. ERRGROUP.WITHCONTEXT
+
+ПРОБЛЕМА:
+  - Запустили несколько горутин, нужно:
+    1. Дождаться завершения всех.
+    2. Если одна горутина упала с ошибкой — отменить остальные.
+    3. Получить первую ошибку.
+
+РЕШЕНИЕ:
+  - errgroup.Group — надстройка над sync.WaitGroup.
+  - WithContext создаёт группу с общим контекстом.
+  - При ошибке в любой горутине контекст отменяется.
+
+КОГДА ИСПОЛЬЗОВАТЬ:
+  - Параллельные запросы к нескольким сервисам.
+  - Задачи, где ошибка в одной = бессмысленность остальных.
+*/
+
+func errgroupEx() {
+	urls := []string{
+		"https://httpbin.org/get",
+		"https://httpbin.org/status/500",
+		"https://httpbin.org/delay/2",
+	}
+	var result sync.Map
+	g, ctx := errgroup.WithContext(context.Background())
+
+	for _, url := range urls {
+		url := url // важно: захватываем переменную цикла
+
+		g.Go(func() error {
+			// Создаём запрос с контекстом из группы
+			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+			if err != nil {
+				return err
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			result.Store(url, resp.StatusCode)
+
+			if resp.StatusCode >= 400 {
+				return fmt.Errorf("HTTP error for %s: %d", url, resp.StatusCode)
+			}
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		fmt.Printf("Errgroup: Ошибка в одном из запросов: %v\n", err)
+	}
+	fmt.Println("Errgroup: Все запросы выполнены успешно")
+
+	result.Range(func(key, value any) bool {
+		fmt.Printf("Errgroup: %s → %d\n", key, value)
+		return true
+	})
+}
+
+/*
+6. RATE LIMITER (ОГРАНИЧИТЕЛЬ СКОРОСТИ)
+
+ПРОБЛЕМА:
+  - Нужно ограничить количество операций в единицу времени.
+  - Например: не более 10 запросов в секунду к API.
+
+РЕШЕНИЯ:
+  1. time.Ticker: для равномерного распределения операций.
+  2. Token Bucket (x/time/rate): позволяет накапливать burst (всплеск).
+
+КОГДА ИСПОЛЬЗОВАТЬ:
+  - Интеграция с API, у которых есть rate limit.
+  - Защита собственного API от перегрузки.
+*/
+
+func rateLimiterTicker() {
+	// 5 операций в секунду -> каждые 200 мс
+	limiter := time.NewTicker(200 * time.Millisecond)
+	defer limiter.Stop()
+
+	for i := 0; i < 10; i++ {
+		<-limiter.C // ждём разрешения
+		fmt.Printf("Request %d at %s\n", i, time.Now().Format("15:04:05.000"))
+	}
+}
+
+func rateLimiterTokenBucket() {
+	// 5 токенов в секунду, burst = 3 (можно сделать 3 быстрых запроса подряд)
+	limiter := rate.NewLimiter(rate.Limit(5), 3)
+	start := time.Now()
+
+	for i := 0; i < 10; i++ {
+		limiter.Wait(context.Background())
+		fmt.Printf("Request %d at %s\n", i, time.Since(start).Truncate(10*time.Millisecond))
+	}
+}
+
+/*
+=============================================================================
+7. COMPARE: ВСЕ ПАТТЕРНЫ (ШПАРГАЛКА ДЛЯ СОБЕСА)
+=============================================================================
+
+ ПАТТЕРН          КОГДА ИСПОЛЬЗОВАТЬ
+ Worker Pool      Много независимых задач. Нужно ограничить число горутин.
+                  Задачи приходят в виде очереди.
+
+ Pipeline         Данные нужно последовательно обработать.
+                  Каждый этап можно распараллелить (fan-out).
+
+ Semaphore        Нужно ограничить число ОДНОВРЕМЕННЫХ операций.
+                  Горутин может быть много, но активных — не больше N.
+
+ errgroup         Нужно дождаться группы горутин И обработать первую ошибку.
+                  При ошибке — отменить остальные.
+
+ Rate Limiter     Нужно ограничить число операций в единицу времени.
+                  Защита API, интеграция с внешними сервисами.
+*/
+
+/*
+8. РЕАЛЬНЫЙ КЕЙС: HTTP CLIENT С RETRY, TIMEOUT, RATE LIMIT
+
+Это комбинация паттернов, которую часто спрашивают на собеседованиях:
+  - Rate Limiter: не более N запросов в секунду.
+  - Timeout: не более M секунд на один запрос.
+  - Retry: при ошибке повторяем до K раз с backoff.
+  - Context: возможность отменить всю операцию.
+*/
+
+type httpClient struct {
+	limiter  *rate.Limiter
+	timeout  time.Duration
+	maxRetry int
+}
+
+func newHTTPClient(requestsPerSec int, timeout time.Duration, maxRetry int) *httpClient {
+	return &httpClient{
+		limiter:  rate.NewLimiter(rate.Limit(requestsPerSec), 1),
+		timeout:  timeout,
+		maxRetry: maxRetry,
+	}
+}
+
+func (c *httpClient) doWithRetry(ctx context.Context, url string) (*http.Response, error) {
+	var lastErr error
+
+	for attemp := 0; attemp < c.maxRetry; attemp++ {
+		// 1. Rate limit: ждём токен
+		if err := c.limiter.Wait(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter: %w", err)
+		}
+		// 2. Таймаут на конкретный запрос
+		reqCtx, cancel := context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(reqCtx, "GET", url, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// 3. Делаем запрос
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+		lastErr = err
+
+		// 4. Backoff перед ретраем (кроме последней попытки)
+		if attemp < c.maxRetry-1 {
+			backoff := time.Duration(attemp+1) * 200 * time.Millisecond
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
+	return nil, fmt.Errorf("failed after %d attempts: %w", c.maxRetry, lastErr)
+}
+
+func HTTPClientEx() {
+	client := newHTTPClient(3, 2*time.Second, 3)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	resp, err := client.doWithRetry(ctx, "https://httpbin.org/delay/1")
+	if err != nil {
+		fmt.Printf("HTTP Client Error: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	fmt.Printf("HTTP Client Success: %s\n", resp.Status)
 }
