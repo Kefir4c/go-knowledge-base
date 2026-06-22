@@ -179,3 +179,43 @@ CREATE TABLE IF NOT EXISTS orders_set_null (
 );
 
 -- Код ошибки в PostgreSQL: "23503" (foreign key violation).
+
+-- ПРАКТИЧЕСКОЕ ЗАДАНИЕ (КРИТЕРИЙ ПРОХОЖДЕНИЯ)
+-- Задача: Создать таблицы для магазина.
+
+-- 1. Таблица categories:
+--    - id (BIGSERIAL, PRIMARY KEY)
+--    - name (TEXT, NOT NULL, UNIQUE)
+
+-- 2. Таблица products:
+--    - id (BIGSERIAL, PRIMARY KEY)
+--    - name (TEXT, NOT NULL)
+--    - price (NUMERIC(10,2), CHECK (price > 0))
+--    - category_id (BIGINT, FOREIGN KEY на categories.id, ON DELETE RESTRICT)
+
+-- 3. Вставьте данные:
+--    - Категория: 'Electronics'
+--    - Товар: 'Laptop', цена 1500.00, category_id = 1
+
+-- 4. Попробуйте:
+--    - Вставить товар с отрицательной ценой (должна быть ошибка CHECK).
+--    - Вставить товар с несуществующей категорией (ошибка FOREIGN KEY).
+--    - Удалить категорию 'Electronics' (должна быть ошибка, потому что есть товар).
+-- 5. В Go:
+--    - Напиши пример, как ты будешь обрабатывать ошибку UNIQUE при вставке дубликата.
+--    - Проверь код ошибки "23505" и верни пользователю сообщение "Email уже занят".
+
+CREATE TABLE IF NOT EXISTS categories(
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS products (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    price NUMERIC(10,2) CHECK (price > 0),
+    category_id BIGINT REFERENCES categories(id) ON DELETE RESTRICT
+);
+
+INSERT INTO categories (name) VALUES ('Electronics');
+INSERT INTO products (name, price, category_id) VALUES ('Laptop', 1500.00, 1)
