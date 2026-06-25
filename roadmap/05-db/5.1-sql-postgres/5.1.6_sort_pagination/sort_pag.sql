@@ -133,7 +133,7 @@ SELECT * FROM products ORDER BY stock DESC;
 -- УРОВЕНЬ 2: Несколько полей, NULLS FIRST/LAST
 
 -- 1.5. Сортировка по категории, затем по цене (дешёвые внутри категории)
-SELECT * FROM products ORDER BY category, price
+SELECT * FROM products ORDER BY category, price;
 
 -- 1.6. Сортировка по категории (по убыванию), внутри — по названию
 SELECT * FROM products ORDER BY category DESC, name;
@@ -143,7 +143,7 @@ SELECT * FROM products ORDER BY category, is_active DESC;
 
 -- 1.8. Сортировка по цене с NULL (если бы были), но у нас NOT NULL
 -- Показываем синтаксис: NULLS FIRST / LAST
-SELECT * FROM products ORDER BY price NULL LAST;
+SELECT * FROM products ORDER BY price NULL ;
 
 -- 1.9. Сортировка по категории, затем по цене, но с NULL в конце
 SELECT * FROM products ORDER BY category NULLS LAST, price;
