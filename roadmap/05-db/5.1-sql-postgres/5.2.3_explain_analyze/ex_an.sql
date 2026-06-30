@@ -155,3 +155,229 @@ SELECT * FROM shipments
 WHERE shipment_date BETWEEN '2023-01-01' AND '2023-12-31';
 -- Если есть индекс на shipment_date — будет Index Scan.
 -- Если нет — Seq Scan.
+
+
+-- 3. INDEX ONLY SCAN (все данные берутся из индекса, таблица не читается)
+-- 3.1. Создаём покрывающий индекс.
+CREATE INDEX idx_suppliers_active_cover ON suppliers(is_active) INCLUDE (name,email);
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT name, email FROM suppliers WHERE is_active = true;
+
+/*
+Index Only Scan using idx_suppliers_active_cover on suppliers  (cost=0.14..8.15 rows=100 width=...)
+  Heap Fetches: 0
+  Buffers: shared hit=4
+Heap Fetches: 0 — таблица не читалась. Это идеал.
+*/
+
+-- 3.2. Если в SELECT есть колонки, не входящие в INCLUDE — будет Index Scan.
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT name, email, phone FROM suppliers WHERE is_active = true;
+
+/*
+Index Scan — потому что phone не в индексе, пришлось идти в таблицу.
+*/
+
+-- 4. BITMAP SCAN (комбинация индекса и битовой карты)
+-- 4.1. Запрос, возвращающий много строк — база может выбрать Bitmap Scan.
+-- Создаём индекс на статус (если нет).
+CREATE INDEX idx_shipments_status ON shipments(status);
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM shipments WHERE status = 'delivered';
+/*
+Если статус 'delivered' у 30% строк, то база может использовать Bitmap Heap Scan:
+Bitmap Index Scan -> Bitmap Heap Scan.
+Потому что Index Scan для большого количества строк невыгоден (пришлось бы много раз ходить в таблицу).
+Bitmap сначала собирает битовую карту, потом читает строки блоками — быстрее.
+*/
+
+-- 4.2. Составной индекс с диапазоном.
+CREATE INDEX idx_shipments_status_date ON shipments(status, shipment_date)
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM shipments
+WHERE status = 'delivered' AND shipment_date > '2023-01-01';
+/*
+Может быть:
+- Index Scan (если строк немного)
+- Bitmap Heap Scan (если строк много)
+Смотрим на actual rows и стоимость.
+*/
+
+-- 5. СОРТИРОВКА (SORT) И ЕЁ ВЛИЯНИЕ
+-- 5.1. Запрос с ORDER BY без индекса.
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM shipments ORDER BY shipment_date DESC;
+
+/*
+Увидим Sort (cost=... rows=...) — база сортирует все строки.
+Если таблица большая, это дорого.
+*/
+
+-- 5.2. Создаём индекс, который поддерживает сортировку.
+CREATE INDEX idx_shipments_shipment_date_desc ON shipments(shipment_date DESC);
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM shipments ORDER BY shipment_date DESC;
+
+/*
+Index Scan Backward — база идёт по индексу в обратном порядке, сортировка не нужна.
+Стоимость падает.
+*/
+
+-- 6. JOIN И ТИПЫ СОЕДИНЕНИЙ
+
+-- 6.1. JOIN двух таблиц без индексов на внешние ключи.
+EXPLAIN(ANALYZE, BUFFERS)
+SELECT p.name, s.quantity, s.shipment_date
+FROM products p
+JOIN shipments s on p.id = s.product_id
+where p.is_active = true;
+/*
+Может быть Hash Join или Nested Loop, но без индексов будет Seq Scan + Hash.
+*/
+
+-- 6.2. Создаём индексы на внешние ключи.
+CREATE INDEX idx_shipments_product_id ON shipments(product_id);
+CREATE INDEX idx_shipments_warehouse_id ON shipments(warehouse_id);
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT p.name, s.quantity, s.shipment_date
+FROM products p
+JOIN shipments s ON p.id = s.product_id
+WHERE p.is_active = true;
+
+/*
+Теперь может быть Nested Loop с Index Scan по shipments.product_id.
+Быстрее.
+*/
+
+-- 7. ПОДЗАПРОСЫ И CTE
+
+-- 7.1. Коррелированный подзапрос (медленный).
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT u.name,
+       (SELECT COUNT(*) FROM shipments s WHERE s.supplier_id = u.id) AS shipment_count
+FROM suppliers u
+WHERE u.is_active = true;
+
+/*
+План: Seq Scan по suppliers, для каждой строки выполняется подзапрос.
+Видим Subquery Scan и Aggregate — медленно, если много поставщиков.
+*/
+
+-- 7.2. Переписываем через JOIN и GROUP BY (быстрее).
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT u.name, COUNT(s.id) AS shipment_count
+FROM suppliers u
+LEFT JOIN shipments s ON u.id = s.supplier_id
+WHERE u.is_active = true
+GROUP BY u.id, u.name;
+
+/*
+Группировка и JOIN часто быстрее коррелированного подзапроса.
+План — Hash Join + GroupAggregate.
+*/
+
+-- 9. ИНДЕКС ПО ВЫРАЖЕНИЮ
+
+-- 9.1. Регистронезависимый поиск.
+CREATE INDEX idx_suppliers_email_lower ON suppliers(LOWER(email));
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM suppliers WHERE LOWER(email) = 'roga@mail.ru';
+
+/*
+Index Scan using idx_suppliers_email_lower — работает быстро.
+Если бы индекса не было, был бы Seq Scan.
+*/
+
+-- 10. ОГРОМНЫЙ OFFSET (ПАГИНАЦИЯ)
+
+-- 10.1. Большой OFFSET заставляет сортировать и отбрасывать много строк.
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM shipments
+ORDER BY shipment_date DESC
+OFFSET 5000 LIMIT 10;
+
+/*
+Sort — сначала сортирует все строки, потом Limit.
+Стоимость растёт с OFFSET.
+*/
+
+-- 10.2. Альтернатива — "keyset pagination" (поиск по последнему значению).
+-- Предположим, мы знаем последнюю дату с предыдущей страницы.
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM shipments
+WHERE shipment_date < '2023-06-01'
+ORDER BY shipment_date DESC
+LIMIT 10;
+
+-- 11. СРАВНЕНИЕ ПЛАНОВ ДО И ПОСЛЕ ИНДЕКСА
+
+-- 11.1. Запрос без индекса.
+DROP INDEX IF EXISTS idx_products_category_price;
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM products WHERE category = 'Electronics' AND price > 100;
+
+-- 11.2. Создаём индекс.
+CREATE INDEX idx_products_category_price ON products(category, price);
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM products WHERE category = 'Electronics' AND price > 100;
+
+/*
+Видим Index Scan, стоимость падает.
+*/
+
+-- 12. КАК ПОНЯТЬ, ЧТО ИНДЕКС НЕ ИСПОЛЬЗУЕТСЯ (ДАЖЕ ЕСЛИ ОН ЕСТЬ)
+
+-- 12.1. Условие с функцией без индекса по выражению.
+-- Есть индекс на email, но запрос с UPPER.
+CREATE INDEX idx_suppliers_email ON suppliers(email);
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM suppliers WHERE UPPER(email) = 'ROGA@MAIL.RU';
+
+/*
+Seq Scan — потому что условие обёрнуто в функцию, а индекс на сырой email.
+Решение: индекс по выражению (LOWER или UPPER).
+*/
+
+-- 12.2. LIKE с ведущим '%'.
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM suppliers WHERE email LIKE '% main.ru'
+
+/*
+Seq Scan — потому что LIKE с ведущим '%' не использует B-Tree индекс.
+Решение: полнотекстовый поиск или триграмный индекс (pg_trgm).
+*/
+
+-- 13. ВЫВОДЫ И ШПАРГАЛКА
+
+/*
+Seq Scan — плохо, если таблица большая.
+Index Scan — хорошо, но читает таблицу.
+Index Only Scan — отлично, всё из индекса.
+Bitmap Heap Scan — хорошо для выборки большого количества строк.
+Nested Loop — хорошо, если одна таблица маленькая, и есть индекс на большой.
+Hash Join — хорошо, если обе таблицы большие, но нет подходящих индексов.
+Merge Join — хорошо, если обе таблицы отсортированы.
+
+ПРИЗНАКИ ПРОБЛЕМ:
+- cost очень высокий
+- rows сильно отличается от фактического
+- много Buffers: read (дисковые чтения)
+- Sort без индекса
+- Seq Scan на большой таблице
+
+ЧТО ДЕЛАТЬ:
+- Создать индекс
+- Сделать индекс покрывающим (INCLUDE)
+- Сделать частичный индекс
+- Сделать индекс по выражению
+- Переписать запрос (убрать коррелированные подзапросы, заменить OFFSET на keyset)
+*/
