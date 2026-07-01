@@ -146,13 +146,13 @@ INSERT INTO products (name, sku, price, weight_kg, category, is_active) VALUES
 -- Генерируем много поставок (100 000 строк) для демонстрации производительности
 INSERT INTO shipments (product_id, warehouse_id, supplier_id, quantity, shipment_date, delivery_date, status)
 SELECT
-    (random() * 9 + 1)::int AS product_id,   -- от 1 до 10
-    (random() * 3 + 1)::int AS warehouse_id, -- от 1 до 4
-    (random() * 4 + 1)::int AS supplier_id,  -- от 1 до 5
+    (random() * 9 + 1)::int AS product_id,
+    (random() * 3 + 1)::int AS warehouse_id,
+    (random() * 4 + 1)::int AS supplier_id,
     (random() * 100 + 1)::int AS quantity,
-    NOW() - (random() * 365 || ' days')::interval AS shipment_date,
+    NOW() - (random() * 365) * INTERVAL '1 day' AS shipment_date,
     CASE
-        WHEN random() > 0.3 THEN NOW() - (random() * 30 || ' days')::interval
+        WHEN random() > 0.3 THEN NOW() - (random() * 30) * INTERVAL '1 day'
         ELSE NULL
         END AS delivery_date,
     CASE
@@ -161,7 +161,7 @@ SELECT
         WHEN random() < 0.6 THEN 'in_transit'
         ELSE 'delivered'
         END AS status
-FROM generate_series(1, 100000);
+FROM generate_series(1, 500000);
 
 -- 2. ЗАПРОСЫ БЕЗ ИНДЕКСОВ (ДЛЯ СРАВНЕНИЯ)
 -- 2.1. Поиск по SKU (артикулу) — уникальное поле
