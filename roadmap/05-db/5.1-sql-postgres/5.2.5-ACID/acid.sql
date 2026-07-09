@@ -111,9 +111,11 @@ PostgreSQL поддерживает четыре уровня изоляции (
 PostgreSQL использует MVCC для реализации изоляции без блокировок.
 
   Как это работает:
-    - Каждая строка имеет скрытые системные колонки: xmin (ID транзакции, которая создала строку) и xmax (ID транзакции, которая удалила строку).
+    - Каждая строка имеет скрытые системные колонки: xmin (ID транзакции, 
+    которая создала строку) и xmax (ID транзакции, которая удалила строку).
     - При UPDATE создаётся новая версия строки, старая помечается как удалённая (xmax).
-    - Каждая транзакция видит только те версии строк, которые были закоммичены на момент её начала (snapshot).
+    - Каждая транзакция видит только те версии строк, которые были закоммичены 
+    на момент её начала (snapshot).
 
   Это позволяет:
     - Читателям не блокировать писателей (и наоборот).
@@ -250,4 +252,403 @@ INSERT INTO products (name, stock, price) VALUES
     ('Monitor', 15, 320.00);
 
 
--- 2. БАЗОВЫЕ ТРАНЗАКЦИИ (BEGIN, COMMIT, ROLLBACK)	ы
+-- 1. БАЗОВЫЕ ТРАНЗАКЦИИ (BEGIN, COMMIT, ROLLBACK)
+-- 1.1 Успешный перевод
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+UPDATE accounts SET balance = balance + 100 WHERE id = 2;
+COMMIT;
+
+-- 1.2 Перевод с откатом
+BEGIN;
+UPDATE accounts SET balance = balance - 2000 WHERE id = 1;
+ROLLBACK;
+-- Пояснение: откатываем все изменения, баланс не изменился.
+
+-- 1.3 Транзакция с SAVEPOINT (частичный откат)
+BEGIN;
+UPDATE accounts SET balance = balance - 50 WHERE id = 3;
+SAVEPOINT before_second_update;
+UPDATE account SET balance = balance - 200 WHERE id = 3;
+ROLLBACK TO SAVEPOINT before_second_update;
+COMMIT;
+-- Пояснение: первое обновление зафиксировалось, второе откатилось.
+
+--- 2. FOR UPDATE (ПЕССИМИСТИЧНАЯ БЛОКИРОВКА)
+-- 2.1 Блокировка одной строки
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1 FOR UPDATE;
+-- Другие транзакции не могут изменить строку id=1
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+COMMIT;
+-- Пояснение: пока мы не коммитим, строка заблокирована.
+
+-- 2.2 Блокировка нескольких строк
+BEGIN;
+SELECT balance FROM accounts WHERE id IN (1, 2) FOR UPDATE;
+UPDATE acconts SET balance = balance - 50 WHERE id = 1;
+UPDATE acconts SET balance = balance - 50 WHERE id = 2;
+COMMIT;
+
+-- Пояснение: блокируем сразу несколько строк.
+
+-- 2.3 NOWAIT — не ждать
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1 FOR UPDATE NOWAIT;
+-- Если строка заблокирована → ошибка "could not obtain lock"
+COMMIT;
+-- Пояснение: сразу ошибка, а не ожидание.
+
+-- 2.4 LIMIT + FOR UPDATE (для пагинации с блокировкой)
+BEGIN;
+SELECT * FROM accounts ORDER BY id LIMIT 10 FOR UPDATE;
+-- Блокируем первые 10 строк для обработки
+COMMIT;
+-- Пояснение: позволяет обрабатывать пачки строк.
+
+-- 2.5 FOR UPDATE OF — блокировка только указанных таблиц
+BEGIN;
+SELECT a.balance, o.amount
+FROM accounts a
+JOIN orders o ON a.id = o.user_id
+WHERE a.id = 1
+FOR UPDATE OF a; -- блокируем только accounts, orders не блокируем
+COMMIT;
+-- Пояснение: полезно при JOIN, чтобы не блокировать лишние таблицы.
+
+--- 3. SKIP LOCKED (ОЧЕРЕДЬ ЗАДАЧ)
+-- 3.1 Базовый воркер с SKIP LOCKED
+BEGIN;
+UPDATE tasks
+SET status = 'processing', assigned_to = 'worker_1'
+WHERE id = (
+  SELECT id
+  FROM tasks
+  WHERE status = 'pending'
+  ORDER BY id
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+COMMIT;
+-- Пояснение: если задача уже заблокирована — берём следующую.
+
+-- 3.2 Массовая обработка с SKIP LOCKED
+BEGIN;
+UPDATE tasks
+SET status = 'processing', assigned_to = 'worker_1'
+WHERE id IN (
+    SELECT id
+    FROM tasks
+    WHERE status = 'pending'
+    ORDER BY id
+    LIMIT 5
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+COMMIT;
+-- Пояснение: берём сразу 5 задач.
+
+-- 3.3 SKIP LOCKED с приоритетом
+BEGIN;
+UPDATE tasks
+SET status = 'processing', assigned_to = 'worker_1'
+WHERE id = (
+  SELECT id
+  FROM tasks
+  WHERE status = 'pending'
+  ORDER BY status DESC, id
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+COMMIT;
+ Пояснение: сначала задачи с высоким приоритетом.
+
+-- 3.4 SKIP LOCKED + RETURNING для логирования
+BEGIN;
+UPDATE tasks
+SET status = 'processing', assigned_to = 'worker_1'
+WHERE id = (
+    SELECT id
+    FROM tasks
+    WHERE status = 'pending'
+    ORDER BY id
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id, task_data, status;
+COMMIT;
+-- Пояснение: RETURNING возвращает обновлённую строку.
+
+--- 4. ОПТИМИСТИЧНАЯ БЛОКИРОВКА (VERSIONING)
+-- 4.1 Базовое обновление с версией
+BEGIN;
+SELECT balance, version FROM accounts WHERE id = 1; --version = 1
+UPDATE accounts
+SET balance = balance - 100, version = version + 1
+WHERE id = 1 AND varsion = 1;
+-- Если обновлено 0 строк → конфликт
+COMMIT;
+-- Пояснение: только одна транзакция может обновить строку.
+
+-- 4.2 Проверка через RETURNING
+BEGIN;
+UPDATE accounts
+SET balance = balance - 100, version = version + 1
+WHERE id = 1 AND version = 1
+RETURNING *;
+COMMIT;
+-- Пояснение: если строка не обновилась → RETURNING не вернёт строки.
+
+-- 4.3 Оптимистичная блокировка для заказа товара
+BEGIN;
+SELECT stock, version FROM products WHERE id = 1; -- version=1
+UPDATE products
+SET stock = stock - 3, version = version + 1
+WHERE id = 1 AND version = 1;
+-- Если конфликт → повторяем транзакцию
+COMMIT;
+-- Пояснение: проверяем, что остаток не изменился.
+
+--- 5. УРОВНИ ИЗОЛЯЦИИ
+-- 5.1 Установка уровня READ COMMITTED (по умолчанию)
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;
+-- Другая транзакция обновила баланс и закоммитила
+SELECT balance FROM accounts WHERE id = 1; -- новое значение (если закоммитили)
+COMMIT;
+-- Пояснение: видим изменения других транзакций после их COMMIT.
+
+-- 5.2 REPEATABLE READ (snapshot)
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;
+-- Другая транзакция обновила баланс и закоммитила
+SELECT balance FROM accounts WHERE id = 1; -- старое значение (snapshot)
+COMMIT;
+-- Пояснение: транзакция видит данные на момент своего начала.
+
+-- 5.3 SERIALIZABLE (самый строгий)
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;
+-- Другая транзакция обновила ту же строку
+-- Одна из транзакций получит ошибку "could not serialize access"
+COMMIT;
+-- Пояснение: предотвращает все аномалии, но может падать с ошибкой.
+
+-- 5.4 Демонстрация Non-Repeatable Read (READ COMMITTED)
+-- Сессия 1 (READ COMMITTED)
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1; -- 1000
+
+-- Сессия 2
+UPDATE accounts SET balance = 900 WHERE id = 1;
+COMMIT;
+
+-- Сессия 1 (повторное чтение)
+SELECT balance FROM accounts WHERE id = 1; -- 900 (отличается!)
+COMMIT;
+-- Пояснение: в READ COMMITTED данные могут измениться между чтениями.
+
+-- 5.5 Демонстрация Non-Repeatable Read (REPEATABLE READ)
+-- Сессия 1 (REPEATABLE READ)
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1; -- 1000
+
+-- Сессия 2
+UPDATE accounts SET balance = 900 WHERE id = 1;
+COMMIT;
+
+-- Сессия 1 (повторное чтение)
+SELECT balance FROM accounts WHERE id = 1; -- 1000 (snapshot!)
+COMMIT;
+-- Пояснение: в REPEATABLE READ данные не меняются.
+
+6. DEADLOCK
+-- 6.1 Пример deadlock (запускать параллельно)
+-- Сессия 1:
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+UPDATE accounts SET balance = balance + 100 WHERE id = 2;
+COMMIT;
+
+-- Сессия 2 (параллельно):
+BEGIN;
+UPDATE accounts SET balance = balance - 50 WHERE id = 2;
+UPDATE accounts SET balance = balance + 50 WHERE id = 1;
+COMMIT;
+-- Пояснение: обе ждут друг друга → deadlock. PostgreSQL откатит одну.
+
+-- 6.2 Исправление deadlock (правильный порядок)
+-- Сессия 1:
+BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+UPDATE accounts SET balance = balance + 100 WHERE id = 2;
+COMMIT;
+
+-- Сессия 2 (правильный порядок):
+BEGIN;
+UPDATE accounts SET balance = balance - 50 WHERE id = 1;
+UPDATE accounts SET balance = balance + 50 WHERE id = 2;
+COMMIT;
+-- Пояснение: всегда обновляем в порядке возрастания id.
+
+-- 6.3 Deadlock с несколькими таблицами
+-- Сессия 1:
+BEGIN;
+UPDATE orders SET status = 'processing' WHERE id = 1;
+UPDATE order_items SET status = 'processing' WHERE order_id = 1;
+COMMIT;
+
+-- Сессия 2 (обратный порядок):
+BEGIN;
+UPDATE order_items SET status = 'processing' WHERE order_id = 1;
+UPDATE orders SET status = 'processing' WHERE id = 1;
+COMMIT;
+-- Пояснение: deadlock из-за разного порядка таблиц.
+-- Всегда сначала обновлять orders, потом order_items.
+
+--6.4. Deadlock с FOR UPDATE
+-- Сессия 1
+BEGIN;
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
+SELECT * FROM accounts WHERE id = 2 FOR UPDATE;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+UPDATE accounts SET balance = balance + 100 WHERE id = 2;
+COMMIT;
+
+-- Сессия 2 (параллельно)
+BEGIN;
+SELECT * FROM accounts WHERE id = 2 FOR UPDATE;
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
+UPDATE accounts SET balance = balance - 50 WHERE id = 2;
+UPDATE accounts SET balance = balance + 50 WHERE id = 1;
+COMMIT;
+
+--6.5. Deadlock с FOR UPDATE NOWAIT (сразу ошибка)
+-- Сессия 1
+BEGIN;
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
+-- Держим блокировку 10 секунд
+SELECT pg_sleep(10);
+COMMIT;
+
+-- Сессия 2 (параллельно)
+BEGIN;
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE NOWAIT;
+-- Ошибка: could not obtain lock on row in relation "accounts"
+COMMIT;
+
+--6.6. Deadlock с INSERT и уникальным индексом
+-- Сессия 1
+INSERT INTO accounts (user_id, balance) VALUE (100, 500) ON CONFLICT (user_id)
+DO UPDATE SET balance = accounts.balance + 500;
+COMMIT;
+
+-- Сессия 2 (параллельно)
+BEGIN;
+INSERT INTO accounts (user_id, balance) VALUE (100, 300) ON CONFLICT (user_id)
+DO UPDATE SET balance = accounts.balance + 300;
+COMMIT;
+
+---7. MVCC И VACUUM
+-- 7.1 Смотрим скрытые колонки (xmin, xmax)
+SELECT xmin, xmax, cmin, cmax, * FROM accounts;
+
+-- 7.2 Количество мёртвых строк (dead tuples)
+SELECT relname, n_dead_tup, n_live_tup, last_vacuum
+FROM pg_stat_user_tables
+WHERE relname = 'accounts';
+
+-- 7.3 Запуск VACUUM
+VACUUM ANALYZE accounts;
+-- Пояснение: очищает мёртвые строки, обновляет статистику.
+
+-- 7.4 VACUUM FULL (освобождает место, блокирует таблицу)
+VACUUM FULL accounts;
+-- Пояснение: полная очистка, но блокирует таблицу (не использовать в проде).
+
+-- 7.5 Включение логирования VACUUM
+SET log_autovacuum_min_duration = 0;
+-- Пояснение: видим, когда и что делает autovacuum.
+
+-- 7.6 Проверка размера таблицы до и после VACUUM
+SELECT pg_size_pretty(pg_total_relation_size('accounts'));
+VACUUM accounts;
+SELECT pg_size_pretty(pg_total_relation_size('accounts'));
+
+---8. ПРОДВИНУТЫЕ ПАТТЕРНЫ 
+-- 9.1 Массовое обновление с эксклюзивной блокировкой таблицы (LOCK TABLE)
+LOCK TABLE tasks IN EXCLUSIVE MODE;
+UPDATE tasks SET status = 'processing' WHERE status = 'pending';
+UNLOCK TABLES;
+-- Пояснение: блокируем всю таблицу для массового обновления.
+
+-- 9.2 WITH HOLD (пассивная блокировка)
+BEGIN;
+DECLARE cur CURSOR WITH HOLD FOR SELECT id, balance FROM accounts;
+COMMIT; -- курсор продолжает существовать
+FETCH NEXT FROM cur; -- работаем с данными вне транзакции
+CLOSE cur; -- закрываем, когда больше не нужен
+
+-- 9.3 Условная блокировка (только если баланс > 0)
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1 FOR UPDATE;
+UPDATE accounts SET balance = balance - 100
+WHERE id = 1 AND balance >= 100;
+COMMIT;
+-- Пояснение: обновляем только если баланс достаточно.
+
+-- 9.4 SKIP LOCKED с условием (только задачи с приоритетом > 5)
+BEGIN;
+UPDATE tasks
+SET status = 'processing'
+WHERE id = (
+    SELECT id
+    FROM tasks
+    WHERE status = 'pending' AND priority > 5
+    ORDER BY priority DESC
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING *;
+COMMIT;
+-- Пояснение: берём задачи с приоритетом > 5.
+
+-- 9.5 Партиционирование таблицы задач для SKIP LOCKED
+-- 1. Создаем партиционированную таблицу (с правильным синтаксисом)
+CREATE TABLE tasks_partitioned (
+    id BIGSERIAL,
+    status TEXT,
+    priority INT,
+    created_at TIMESTAMPTZ
+) PARTITION BY RANGE (priority);
+
+-- 2. Создаем партиции
+CREATE TABLE tasks_partitioned_1 PARTITION OF tasks_partitioned
+    FOR VALUES FROM (1) TO (10);
+CREATE TABLE tasks_partitioned_2 PARTITION OF tasks_partitioned
+    FOR VALUES FROM (10) TO (20);
+CREATE TABLE tasks_partitioned_3 PARTITION OF tasks_partitioned
+    FOR VALUES FROM (20) TO (30);
+
+-- 3. Каждый воркер работает со своей партицией (через условие на priority)
+-- Воркер 1:
+BEGIN;
+WITH locked AS (
+    SELECT id FROM tasks_partitioned
+    WHERE priority BETWEEN 1 AND 10
+      AND status = 'pending'
+    ORDER BY created_at
+    LIMIT 10
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE tasks_partitioned
+SET status = 'processing'
+FROM locked
+WHERE tasks_partitioned.id = locked.id
+RETURNING *;
+COMMIT;
