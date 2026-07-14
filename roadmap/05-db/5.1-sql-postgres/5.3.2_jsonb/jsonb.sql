@@ -361,3 +361,241 @@ SELECT user_id, settings
 FROM notification_settings
 WHERE settings->>'email' = 'true';
 -- Теперь используется Index Scan!
+
+-- 2.7. РАБОТА С JSONB (ОБНОВЛЕНИЕ, УДАЛЕНИЕ, ДОБАВЛЕНИЕ)
+-- 2.7.1. Добавление нового поля
+UPDATE notification_settings
+SET settings = settings || '{"push": true}'::JSONB
+WHERE user_id = 5;
+
+-- 2.7.2. Обновление существующего поля
+UPDATE notification_settings
+SET settings = settings || '{"email": false}'::JSONB
+WHERE user_id = 2;
+
+-- 2.7.3. Обновление вложенного поля (используем jsonb_set)
+UPDATE notification_settings
+SET settings = jsonb_set(settings, '{channels, telegram}, 'true'::JSONB')
+WHERE user_Id = 1;
+
+-- 2.7.4. Обновление нескольких полей через jsonb_set
+UPDATE notification_settings
+SET settings = jsonb_set(
+    jsonb_set(settings, '{quiet_hours, start}', '"21:00"'::JSONB),
+    '{quiet_hours, end}', '"06:00"'::JSONB
+)
+WHERE user_id = 1;
+
+-- 2.7.5. Удаление ключа (оператор -)
+UPDATE notification_settings
+SET settings = settings - 'language'      -- удаляем поле language
+WHERE user_id = 2;
+
+-- 2.7.6. Удаление вложенного ключа (#-)
+UPDATE notification_settings
+SET settings = settings #- '{channels, whatsapp}'
+WHERE user_id = 1;
+
+-- 2.7.7. Добавление элемента в массив (используем ||)
+UPDATE notification_settings
+SET settings = jsonb_set(
+    settings,
+    '{tags}',
+    (settings -> 'tags') || '["critical"]'::JSONB
+)
+WHERE user_id = 1;
+
+-- 2.7.8. Удаление элемента из массива (через -)
+UPDATE notification_settings
+SET settings = jsonb_set(
+    settings,
+    '{tags}',
+    (settings -> 'tags') - 'regulaer'::TEXT:JSONB
+)
+WHERE user_id = 2;
+
+-- 2.8. СЛОЖНЫЕ ЗАПРОСЫ С JSONB
+-- 2.8.1. Поиск по нескольким условиям (AND)
+SELECT user_id, settings
+FROM notification_settings
+WHERE settings @> '{"email": true}'
+    AND settings @> '{"push": true}'
+    AND settings @> '{"channels" : {"telegram": true}}';
+
+-- 2.8.2. Поиск с OR (используем ? или OR)
+SELECT user_id, settings
+FROM notification_settings
+WHERE settings ? 'language'
+   OR settings ? 'timezone';    
+
+-- 2.8.3. Поиск по вложенному полю с сравнением   
+SELECT user_id, settings
+FROM notification_settings
+WHERE (settings #>> '{quiet_hours, start}') < '23:00';
+
+-- 2.8.4. Агрегация: сколько пользователей имеют каждый тип уведомления
+SELECT
+    'email' AS notification_type,
+    COUNT(*) FILTER (WHERE settings @> '{"email": true}') AS enabled
+FROM notification_settings
+UNION ALL
+SELECT
+    'push' AS notification_type,
+    COUNT(*) FILTER (WHERE settings @> '{"push": true}') AS enabled
+FROM notification_settings
+UNION ALL
+SELECT
+    'sms' AS notification_type,
+    COUNT(*) FILTER (WHERE settings @> '{"sms": true}') AS enabled
+FROM notification_settings;
+
+-- 2.8.5. Получение всех уникальных тегов
+SELECT DISTINCT jsonb_array_elements(settings->'tags') AS tag
+FROM notification_settings
+WHERE settings ? 'tags';
+
+-- 2.8.6. Получение пользователей с конкретным тегом (через jsonb_array_elements)
+SELECT DISTINCT user_id, settings
+FROM notification_settings,
+     jsonb_array_elements_text(settings->'tags') AS tag
+WHERE tag = 'urgent';
+
+-- 2.8.7. Пользователи с минимальными настройками (только email)
+SELECT user_id, settings
+FROM notification_settings
+WHERE settings = '{"email": true}'::JSONB;
+
+--СЛОЖНЫЕ ПРИМЕРЫ УРОВНЯ SENIOR ДЛЯ JSONB 
+-- 1. КОМБИНИРОВАННЫЙ ПОИСК С РАЗВОРАЧИВАНИЕМ МАССИВОВ
+-- Найти пользователей, у которых есть тег 'urgent' И включен email И
+-- language = 'ru' (если поле language есть)
+SELECT DISTINCT ns.user_id, ns.settings
+FROM notification_settings ns,
+    jsonb_array_elements_text(ns.settings ->'tags') AS tag
+WHERE ns.settings @> '{"email": true}'
+    AND (ns.settings ->>'language') = 'true'
+    AND tag = 'urgent';
+
+-- 2. ОБНОВЛЕНИЕ С УСЛОВИЕМ: добавить тег 'vip' только для пользователей,
+-- у которых суммарное количество тегов < 5, и они имеют email=true
+WITH target_users AS(
+    SELECT user_id, settings
+    FROM notification_settings
+    WHERE settings @> '{"email": true}'
+        AND jsonb_array_length(settings -> 'tags') < 5
+)    
+UPDATE notification_settings
+SET settings = jconb_set(
+    settings,
+    '{tags}',
+    (settings ->> 'tags') || '["vip"]'::JSONB,
+    true
+)
+FROM target_users
+WHERE notification_settings.user_id = target_users.user_id
+    AND NOT (settings ->> 'tags' ? 'vip');
+-- Пояснение: CTE, jsonb_array_length, условное добавление без дубликатов.
+
+-- 3. АНАЛИТИКА: количество пользователей по комбинациям (email, push, sms)
+-- и среднее количество тегов
+SELECT
+    (settings ->> 'email')::boolean AS email,
+    (settings ->> 'push')::boolean AS push,
+    (settings ->> 'sms')::boolean AS sms,
+    COUNT(*) AS user_count,
+    AVG(jsonb_array_length(settings -> 'tags'))::int AS avg_tags
+FROM notification_settings
+WHERE settings ? 'email'
+  AND settings ? 'push'
+  AND settings ? 'sms'
+GROUP BY email, push, sms
+ORDER BY user_count DESC;  
+
+-- 4. ОБНОВЛЕНИЕ НЕСКОЛЬКИХ ПОЛЕЙ С ПРОВЕРКОЙ (оптимистичная блокировка)
+UPDATE notification_settings
+SET settings = settings || jsonb_build_object(
+    'email', true,
+    'push', false,
+    'updated_at', to_jsonb(NOW())
+)
+WHERE user_id = 1
+    AND (settings ->> 'email')::boolean = false --проверка старого значения
+    AND (settings ->> 'email')::boolean = true;
+
+-- 5. ИНДЕКС НА ЧАСТЬ JSONB (partial index) — для быстрого поиска активных email
+CREATE INDEX idx_email_true ON notification_settings (user_id) WHERE settings @> '{"email": true}';
+-- Запрос, использующий этот индекс:
+SELECT user_id FROM notification_settings
+WHERE settings @> '{"email": true}';
+-- Пояснение: частичный индекс уменьшает размер и ускоряет выборку активных.     
+
+-- 6. ПОИСК С ИСПОЛЬЗОВАНИЕМ ВСЕХ ОПЕРАТОРОВ: ?, ?|, ?&, @>, ->, ->>
+-- Найти пользователей, у которых есть language и tags, и хотя бы один тег из списка
+SELECT user_id, settings
+FROM notification_settings
+WHERE settings ? 'language'
+ AND settings @> '{"email": true}'
+ AND settings -> 'tags' ?| ARRAT '['urgent', 'critical']';
+
+ -- 7. УДАЛЕНИЕ ПОЛЯ С ГЛУБОКИМ ПУТЕМ (jsonb #-) и переименование
+-- Удаляем whatsapp из channels
+UPDATE notification_settings
+SET settings = settings #- '{channels, whatsapp}'
+WHERE settings @> '{"channels": {"whatsapp": true}}'
+RETURNING user_id, settings;
+
+-- Переименовываем поле 'telegram' в 'tg' (через удаление и добавление)
+UPDATE notification_settings
+SET settings = jsonb_set(
+    settings - 'channels',
+    '{channels, tg}',
+    settings->'channels'->'telegram'
+)
+WHERE settings ? 'channels'
+  AND settings->'channels' ? 'telegram';
+-- Пояснение: сложные манипуляции с путями.
+
+-- 8. ИСПОЛЬЗОВАНИЕ ОКОННЫХ ФУНКЦИЙ ДЛЯ РАНЖИРОВАНИЯ ПО КОЛИЧЕСТВУ НАСТРОЕК
+SELECT
+    user_id,
+    jsonb_array_length(settings->'tags') AS tag_count,
+    (SELECT COUNT(*) FROM jsonb_each(settings) WHERE key NOT IN ('tags', 'channels')) AS other_fields,
+    ROW_NUMBER() OVER (ORDER BY jsonb_array_length(settings->'tags') DESC) AS tag_rank
+FROM notification_settings
+WHERE settings ? 'tags';
+-- Пояснение: оконная функция + подзапрос для подсчета полей.
+
+-- 9. ПОСТРОЕНИЕ ОТЧЕТА: сколько пользователей имеют каждый тег
+-- с фильтром по email=true и группировкой по language
+
+WITH tag_expanded AS (
+    SELECT
+        user_id,
+        tag,
+        settings ->> 'language' AS language,
+        settings @> '{"email": true}' AS has_email
+    FROM notification_settings,
+         jsonb_array_elements_text(settings->'tags') AS tag     
+    WHERE setting ? 'tags'     
+)
+SELECT
+    tag,
+    language,
+    COUNT(*) AS user_count
+FROM tag_expanded
+WHERE has_email = true
+    AND language IS NOT NULL
+GROUP BY tag, language
+ORDER BY tag, user_count DESC;
+
+-- 10. ОПТИМИЗАЦИЯ: СОЗДАНИЕ ВИРТУАЛЬНОЙ КОЛОНКИ (GENERATED) ДЛЯ ЧАСТОГО ПОЛЯ
+ALTER TABLE notification_settings
+ADD COLUMN email_enabled boolean
+GENERATED ALWAYS AS ((settings ->> 'email')::boolean) STORED;
+
+-- Теперь можно создать обычный индекс и использовать в WHERE
+CREATE INDEX idx_email_enabled ON notification_settings (email_enabled);
+
+-- Запрос будет использовать индекс
+SELECT user_id FROM notification_settings WHERE email_enabled = true;
+-- Пояснение: генерируемые колонки упрощают индексацию и ускоряют запросы.
