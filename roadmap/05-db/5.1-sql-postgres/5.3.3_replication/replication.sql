@@ -177,3 +177,168 @@ SELECT
 -- 2.3.1. Создание пользователя для репликации (на мастере)
 CREATE USER replica_user WITH REPLICATION ENCRYPTED PASSWORD 'strong_password';
 
+-- 2.3.2. Включение синхронной репликации
+SET synchronous_commit = on;
+SET synchronous_standby_names = 'standby1, standby2';
+
+-- 2.3.3. Отключение синхронной репликации
+SET synchronous_commit = off;
+
+-- 2.3.4. Переключение в режим только для чтения (на реплике)
+SET default_transaction_read_only = on;
+
+-- 2.3.5. Повышение реплики до мастера (ручной failover)
+SELECT pg_promote();
+
+-- 2.4. РАБОТА С WAL (ДЛЯ АРХИТЕКТОРОВ)
+
+-- 2.4.1. Просмотр текущей позиции в WAL
+SELECT pg_current_wal_lsn();
+
+-- 2.4.2. Просмотр последних WAL-файлов
+SELECT * FROM pg_ls_waldir() ORDER BY modification DESC LIMIT 10;
+
+-- 2.4.3. Просмотр размера WAL
+SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0') AS wal_size_bytes;
+
+-- 2.4.4. Принудительная архивация WAL
+SELECT pg_switch_wal();
+
+-- 2.5. ДИАГНОСТИКА РЕПЛИКАЦИИ
+
+-- 2.5.1. Проверка настроек репликации на мастере
+SHOW wal_level;
+SHOW max_wal_senders;
+SHOW wal_keep_size;
+SHOW synchronous_commit;
+SHOW synchronous_standby_names;
+
+-- 2.5.2. Проверка настроек на реплике
+SHOW hot_standby;
+SHOW primary_conninfo;
+SHOW restore_command;
+
+-- 2.5.3. Просмотр слотов репликации
+SELECT * FROM pg_replication_slots;
+
+-- 2.5.4. Удаление слота репликации (если реплика больше не нужна)
+SELECT pg_drop_replication_slot('slot_name');
+
+-- 2.6. FAILOVER (ПЕРЕКЛЮЧЕНИЕ)
+
+-- 2.6.1. Проверка, можно ли повысить реплику до мастера (на реплике)
+SELECT pg_wal_replay_pause();  -- приостановить воспроизведение
+SELECT pg_wal_replay_resume(); -- возобновить воспроизведение
+
+-- 2.6.2. Проверка целостности данных после failover
+-- Сравнение количества записей на мастере и реплике (пример)
+SELECT 'master' AS server, COUNT(*) FROM users
+UNION ALL
+SELECT 'replica' AS server, COUNT(*) FROM users;
+
+-- 2.6.3. Тестирование failover (не запускать на продакшене!)
+-- На реплике
+SELECT pg_promote(true, 60); -- форсировать переключение с таймаутом 60 сек
+
+-- 2.7. БАЛАНСИРОВКА НАГРУЗКИ (ЧТЕНИЕ С РЕПЛИК)
+
+-- 2.7.1. Создание пользователя только для чтения с реплик
+CREATE USER readonly_user WITH PASSWORD 'readonly_password';
+GRANT CONNECT ON DATABASE mydb TO readonly_user;
+GRANT USAGE ON SCHEMA public TO readonly_user;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly_user;
+
+-- 2.7.2. Принудительное использование реплики для запроса
+-- (можно через комментарий, чтобы отслеживать)
+/* REPLICA */ SELECT * FROM user WHERE id = 1;
+
+-- 2.7.3. Транзакция только для чтения (на реплике)
+BEGIN;
+SET TRANSACTION READ ONLY
+SELECT * FROM users;
+COMMIT;
+
+-- 2.8. УСТРАНЕНИЕ ПРОБЛЕМ
+
+-- 2.8.1. Реплика отстаёт (lag > 1 час)
+-- Проверить, что мастер отправляет WAL
+SELECT pg_current_wal_lsn();
+
+-- Проверить, что реплика получает WAL
+SELECT pg_last_wal_receive_lsn();
+
+-- Принудительно переключить WAL-файл
+SELECT pg_switch_wal();
+
+-- 2.8.2. Реплика перестала получать данные (state = 'catchup')
+-- Проверить слоты репликации
+SELECT * FROM pg_replication_slots WHERE active = false;
+
+-- Пересоздать слот репликации (если повреждён)
+-- SELECT pg_drop_replication_slot('slot_name');
+-- Затем пересоздать
+
+-- 2.8.3. Мастер упал, реплика не становится мастером
+-- Проверить, что реплика в режиме восстановления
+SELECT pg_is_in_recovery();
+
+-- Если true, принудительно повысить
+SELECT pg_promote();
+
+-- 2.9. ПРИМЕРЫ
+
+-- 2.9.1. Проверка консистентности данных между мастером и репликой
+-- Сравнение хешей таблиц
+SELECT md5(STRING_AGG(id::text || name, ',' ORDER BY id)) AS table_hash
+FROM users;
+
+-- 2.9.2. Восстановление реплики после длительного отставания
+-- На реплике
+SELECT pg_wal_replay_pause();
+-- Дождаться, пока реплика догонит мастер
+SELECT pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn();
+-- Возобновить
+SELECT pg_wal_replay_resume();
+
+-- 2.9.3. Каскадная репликация (реплика от реплики)
+-- На первой реплике (которая будет источником для второй)
+-- В postgresql.conf:
+-- wal_level = replica
+-- max_wal_senders = 10
+
+-- На второй реплике:
+-- primary_conninfo = 'host=replica1 port=5432 user=replica_user password=...'
+
+-- 2.9.4. Логическая репликация (таблицы)
+-- На мастере
+CREATE PUBLICATION my_pub FOR TABLE users, orders;
+
+-- На реплике
+CREATE SUBSCRIPTION my_sub
+CONNECTION 'host=master port=5432 dbname=mydb user=replica_user password=...'
+PUBLICATION my_pub;
+
+-- Проверка
+SELECT * FROM pg_publication;
+SELECT * FROM pg_subscription;
+
+-- 2.9.5. Мониторинг задержки с созданием оповещений
+CREATE OR REPLACE FUNCTION check_replication_lag()
+RETURNS VOID AS $$
+DECLARE
+    lag_seconds NUMERIC;
+BEGIN
+    SELECT EXTRACT(EPOCH FROM replay_lag) INTO lag_seconds
+    FROM pg_stat_replication
+    WHERE state = 'streaming'
+    LIMIT 1;
+
+    IF lag_seconds > 60 THEN
+        RAISE WARNING 'Replication lag is % seconds!', lag_seconds;
+        -- Здесь можно отправить оповещение (через pg_notify или внешний скрипт)
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Запуск проверки (можно по расписанию через cron)
+SELECT check_replication_lag();
