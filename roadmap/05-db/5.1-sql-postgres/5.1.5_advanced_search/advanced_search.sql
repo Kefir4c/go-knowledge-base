@@ -77,7 +77,7 @@ SELECT * FROM users_test
 WHERE name LIKE 'A%' OR name LIKE 'C%' OR name LIKE 'E%';
 
 -- 1.7. LIKE и NULL (NULL не подходит ни под какой LIKE)
-SELECT * FROM users_test name LIKE '%' -- все строки, где name NOT NULL
+SELECT * FROM users_test WHERE name LIKE '%' -- все строки, где name NOT NULL
 
 -- 2. BETWEEN — РАСШИРЕННЫЕ ВОЗМОЖНОСТИ
 
