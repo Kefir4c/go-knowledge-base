@@ -40,7 +40,30 @@
    - Группировка по выражению: GROUP BY DATE(created_at).
    - ROLLUP, CUBE, GROUPING SETS (для аналитики, редко на собесах).
 
-7. СВЯЗЬ С GO:
+7. ИНТРЕСНЫЕ ФИШКИ:
+1. HAVING без GROUP BY — существует!
+SELECT COUNT(*) AS total
+FROM users
+HAVING COUNT(*) > 100;
+Это работает! Без GROUP BY вся таблица считается одной группой. Иногда используется в подзапросах для проверки условий на всю таблицу.
+
+2. GROUP BY по номеру колонки (синтаксический сахар)
+SELECT department_id, AVG(salary)
+FROM employees
+GROUP BY 1;
+GROUP BY 1 — то же самое, что GROUP BY department_id. Удобно для быстрых запросов в psql, но в продакшене лучше использовать имена колонок (читаемость).
+
+3. Агрегатные функции с FILTER (PostgreSQL) — мощная фича
+SELECT
+    department_id,
+    COUNT(*) AS total_employees,
+    COUNT(*) FILTER (WHERE salary > 50000) AS high_salary,
+    COUNT(*) FILTER (WHERE salary <= 50000) AS low_salary
+FROM employees
+GROUP BY department_id;
+Вместо нескольких подзапросов или CASE внутри SUM, можно использовать FILTER - красивое и понятное решение.
+
+8. СВЯЗЬ С GO:
    - Результат агрегации часто маппится в структуру с полями: Name, Total, Count и т.д.
    - Для Dashboard используются запросы с GROUP BY и сортировкой LIMIT.
    - Можно использовать оконные функции для ранжирования (позже).
