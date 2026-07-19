@@ -20,6 +20,58 @@
 
    - CTE может быть рекурсивной (для иерархий), но это тема отдельная.
 
+1.1. CTE — это не просто подзапрос, это «барьер» для оптимизатора
+Вважный пункт: «CTE может быть материализована или встроена». Это ключевой нюанс, о котором забывают многие разработчики.
+
+До PostgreSQL 12: CTE всегда материализовалась (вычислялась один раз и сохранялась во временной таблице). Это было безопасно, 
+но иногда медленно, потому что оптимизатор не мог переставить операции.
+
+С PostgreSQL 12: Если CTE используется только один раз, она не материализуется, а встраивается в основной запрос. Это позволяет 
+оптимизатору переставлять операции внутри CTE, улучшая план.
+
+Пример (где это важно):
+
+WITH active_users AS (
+    SELECT * FROM users WHERE is_active = true
+)
+SELECT * FROM active_users WHERE name = 'Alice';
+До PG 12: Сначала создалась таблица всех активных пользователей (может быть 1 млн строк), потом из неё выбрали Алису.
+
+С PG 12: Оптимизатор может сначала применить WHERE name = 'Alice', а потом уже is_active = true (если это выгоднее).
+
+Как управлять материализацией (PG 12+):
+-- Принудительная материализация (если CTE используется несколько раз)
+WITH active_users AS MATERIALIZED (
+    SELECT * FROM users WHERE is_active = true
+)
+SELECT * FROM active_users WHERE name = 'Alice';
+
+-- Запрет материализации (если хотим, чтобы CTE встроилась)
+WITH active_users AS NOT MATERIALIZED (
+    SELECT * FROM users WHERE is_active = true
+)
+SELECT * FROM active_users WHERE name = 'Alice';   
+
+1.2. Рекурсивные CTE — мощь, но с подвохом
+Рекурсивные CTE (WITH RECURSIVE) — это тема отдельная, но важно знать одну опасность.
+Опасность: Если забыть LIMIT или условие выхода, рекурсивный запрос может упасть в бесконечный цикл и нагрузить сервер до смерти.
+
+Пример безопасной рекурсии:
+
+WITH RECURSIVE subordinates AS (
+    -- Базовый случай: сам сотрудник
+    SELECT id, name, manager_id, 1 AS level
+    FROM employees
+    WHERE id = 1
+    UNION ALL
+    -- Рекурсивный случай: подчинённые
+    SELECT e.id, e.name, e.manager_id, s.level + 1
+    FROM employees e
+    JOIN subordinates s ON e.manager_id = s.id
+    WHERE s.level < 10  -- !!! Защита от бесконечного цикла !!!
+)
+SELECT * FROM subordinates;
+
 2. ЧТО ТАКОЕ ОКОННЫЕ ФУНКЦИИ?
    - Оконные функции вычисляют значение для каждой строки на основе "окна" — набора строк, связанных с текущей строкой.
    - В отличие от GROUP BY, оконные функции НЕ схлопывают строки — каждая строка остаётся в результате.
@@ -27,11 +79,78 @@
    - PARTITION BY — делит строки на группы (как GROUP BY, но без схлопывания).
    - ORDER BY — задаёт порядок строк внутри каждой группы (нужен для функций ранжирования и смещения).
 
+2.1. Оконные функции — порядок выполнения и PARTITION BY
+Выше написано: «Оконные функции вычисляются ПОСЛЕ WHERE, GROUP BY, HAVING, но ДО ORDER BY и LIMIT». Это критически важно для производительности.
+
+Пример:
+SELECT * FROM (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) AS rn
+    FROM products
+    WHERE is_active = true
+) t
+WHERE rn = 1;
+Здесь ROW_NUMBER() вычисляется после WHERE is_active = true. Если бы мы оставили WHERE снаружи, он бы применился после вычисления оконной функции, и это было бы медленнее.
+
+Правило: Всегда фильтруй WHERE как можно раньше, до оконных функций.
+
+2.2. Оконные функции с ROWS и RANGE — в чём разница?
+ROWS — ограничивает окно строго по количеству строк.
+RANGE — ограничивает окно по значению (например, все строки, где цена отличается не более чем на 10%).
+
+Пример:
+
+-- Скользящее среднее по 3 предыдущим строкам (ROWS)
+SELECT
+    date,
+    amount,
+    AVG(amount) OVER (ORDER BY date ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS avg_3
+FROM sales;
+
+-- Все строки, где дата отличается не более чем на 7 дней (RANGE)
+SELECT
+    date,
+    amount,
+    AVG(amount) OVER (ORDER BY date RANGE BETWEEN '7 days' PRECEDING AND CURRENT ROW) AS avg_7d
+FROM sales;
+Фишка: RANGE с датами — мощная штука, которую мало кто знает, но она очень полезна для финансовых отчётов.   
+
 3. ЗАЧЕМ НУЖНЫ ОКОННЫЕ ФУНКЦИИ?
    - Ранжирование: присвоить номер или ранг каждой строке в группе (ROW_NUMBER, RANK, DENSE_RANK).
    - Доступ к соседним строкам: показать предыдущее или следующее значение (LAG, LEAD).
    - Накопительные итоги: кумулятивная сумма, скользящее среднее (SUM() OVER (ORDER BY ...)).
    - Сравнение со средним по группе: показать зарплату сотрудника и среднюю зарплату по отделу в той же строке.
+
+3.1. NTILE — распределение по корзинам
+NTILE(n) — разбивает строки на n примерно равных групп (корзин). Используется для квартилей, децилей и т.д.
+
+Пример:
+-- Разбиваем сотрудников на 4 квартили по зарплате
+SELECT
+    name,
+    salary,
+    NTILE(4) OVER (ORDER BY salary DESC) AS quartile
+FROM employees;
+Фишка: Это часто спрашивают на собеседованиях, потому что задача «найти топ-10% сотрудников» решается через NTILE(10).
+
+3.2. FIRST_VALUE и LAST_VALUE с подвохом
+FIRST_VALUE — возвращает первое значение в окне.
+LAST_VALUE — возвращает последнее значение в окне.
+
+Подвох: По умолчанию LAST_VALUE считает последним текущую строку, потому что окно по умолчанию ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW. 
+Чтобы получить реальное последнее значение в группе, нужно явно указать ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING.
+
+Пример:
+-- Показывает разницу между зарплатой сотрудника и максимальной в отделе
+SELECT
+    name,
+    salary,
+    department,
+    FIRST_VALUE(salary) OVER (PARTITION BY department ORDER BY salary DESC) AS max_salary,
+    LAST_VALUE(salary) OVER (PARTITION BY department ORDER BY salary DESC
+        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS min_salary
+FROM employees;   
 
 4. КЛЮЧЕВЫЕ ОКОННЫЕ ФУНКЦИИ (ПОСТГРЕС):
    - ROW_NUMBER() — порядковый номер строки в рамках PARTITION (уникальный, даже при равенстве).
@@ -65,6 +184,85 @@
    - Кумулятивная выручка по месяцам.
    - Сравнение зарплаты сотрудника со средней по отделу.
    - Нумерация строк для пагинации (ROW_NUMBER).
+
+8. Фишки 
+Козырь №1: «CTE — это не всегда быстрее подзапроса»
+Суть: В PostgreSQL CTE может материализоваться, а подзапрос — нет. Иногда подзапрос работает быстрее, 
+потому что он встраивается в план и позволяет оптимизатору переставлять операции.
+
+Пример:
+-- CTE (может быть медленнее)
+WITH active_users AS (
+    SELECT * FROM users WHERE is_active = true
+)
+SELECT * FROM active_users WHERE name = 'Alice';
+
+-- Подзапрос (может быть быстрее)
+SELECT * FROM (
+    SELECT * FROM users WHERE is_active = true
+) active_users
+WHERE name = 'Alice';
+Что сказать на собеседовании:
+«В PostgreSQL CTE может материализоваться, что иногда хуже, чем простой подзапрос, потому что оптимизатор не может переставить операции. 
+Поэтому я всегда проверяю EXPLAIN и, если нужно, использую NOT MATERIALIZED для CTE, чтобы заставить её встроиться.
+
+2: «Оконные функции и DISTINCT — порядок имеет значение»
+Суть: DISTINCT применяется после оконных функций. Поэтому если ты используешь DISTINCT и оконную функцию, она выполнится до удаления дубликатов.
+
+Пример:
+-- Сначала ROW_NUMBER(), потом DISTINCT
+SELECT DISTINCT
+    category,
+    ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) AS rn
+FROM products;
+Что сказать на собеседовании:
+«Важно помнить, что оконные функции вычисляются до DISTINCT. Поэтому если я хочу получить уникальные значения, 
+я сначала применяю оконную функцию, а потом фильтрую или группирую.
+
+3: «Оконные функции в WHERE — нельзя, но можно через подзапрос»
+Суть: Оконные функции нельзя использовать напрямую в WHERE, потому что они вычисляются после WHERE.
+
+Как обойти:
+-- Ошибка: нельзя использовать оконную функцию в WHERE
+SELECT * FROM products
+WHERE ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) = 1;
+
+-- Правильно: через подзапрос или CTE
+WITH ranked AS (
+    SELECT *,
+           ROW_NUMBER() OVER (PARTITION BY category ORDER BY price DESC) AS rn
+    FROM products
+)
+SELECT * FROM ranked WHERE rn = 1;
+
+4: «Оконные функции с агрегатами — мощь комбинации»
+Суть: Ты можешь использовать агрегаты внутри оконных функций.
+
+Пример:
+-- Показать зарплату, среднюю по отделу и разницу
+SELECT
+    name,
+    salary,
+    department,
+    AVG(salary) OVER (PARTITION BY department) AS avg_dept,
+    salary - AVG(salary) OVER (PARTITION BY department) AS diff_from_avg
+FROM employees;
+Фишка: Это заменяет отдельный GROUP BY и подзапрос, делая код чище и быстрее.
+
+Козырь №5: «Оконные функции и пагинация без OFFSET»
+Суть: Оконные функции позволяют делать пагинацию без OFFSET, что особенно полезно для больших таблиц.
+
+Пример:
+-- Пагинация с ROW_NUMBER
+WITH numbered AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (ORDER BY id) AS rn
+    FROM users
+)
+SELECT * FROM numbered
+WHERE rn BETWEEN 11 AND 20;
+Фишка: На собеседовании это покажет, что ты знаешь альтернативу OFFSET для пагинации на больших объёмах данных.   
 */
 
 -- 0. СОЗДАНИЕ ТАБЛИЦ (ЛОГИСТИКА И СКЛАДЫ)
