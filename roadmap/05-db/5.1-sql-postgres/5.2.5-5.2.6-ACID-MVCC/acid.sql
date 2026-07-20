@@ -12,7 +12,6 @@
 Ниже — максимально подробная теория с примерами.
 
 1. ЧТО ТАКОЕ ТРАНЗАКЦИЯ?
-
 Транзакция — это группа операций, которые выполняются как единое целое.
 Либо все операции выполняются успешно, либо ни одна.
 
@@ -28,7 +27,6 @@ COMMIT (фиксация) или ROLLBACK (откат).
 Если между BEGIN и COMMIT произошла ошибка, все изменения откатываются.
 
 2. ACID — ЧЕТЫРЕ СВОЙСТВА ТРАНЗАКЦИЙ
-
 ACID — это аббревиатура, которая описывает свойства надёжных транзакций.
 
   1. Atomicity (Атомарность)
@@ -49,7 +47,6 @@ ACID — это аббревиатура, которая описывает св
      После COMMIT изменения сохраняются на диске и не пропадают даже при сбое.
 
 3. АНОМАЛИИ ПРИ ПАРАЛЛЕЛЬНЫХ ТРАНЗАКЦИЯХ
-
 При параллельном выполнении транзакций могут возникать аномалии:
 
   Dirty Read (Грязное чтение):
@@ -85,7 +82,6 @@ ACID — это аббревиатура, которая описывает св
       Транзакция А: SELECT * FROM accounts WHERE balance > 500;  -- 3 строки
 
 4. УРОВНИ ИЗОЛЯЦИИ В POSTGRESQL
-
 PostgreSQL поддерживает четыре уровня изоляции (стандарт SQL):
 
   Уровень               | Dirty Read | Non-Repeatable Read | Phantom Read
@@ -107,14 +103,13 @@ PostgreSQL поддерживает четыре уровня изоляции (
     COMMIT;
 
 5. MVCC (MULTI-VERSION CONCURRENCY CONTROL)
-
 PostgreSQL использует MVCC для реализации изоляции без блокировок.
 
   Как это работает:
-    - Каждая строка имеет скрытые системные колонки: xmin (ID транзакции, 
+    - Каждая строка имеет скрытые системные колонки: xmin (ID транзакции,
     которая создала строку) и xmax (ID транзакции, которая удалила строку).
     - При UPDATE создаётся новая версия строки, старая помечается как удалённая (xmax).
-    - Каждая транзакция видит только те версии строк, которые были закоммичены 
+    - Каждая транзакция видит только те версии строк, которые были закоммичены
     на момент её начала (snapshot).
 
   Это позволяет:
@@ -125,14 +120,30 @@ PostgreSQL использует MVCC для реализации изоляци�
     - Старые версии строк (dead tuples) накапливаются и требуют VACUUM.
     - Размер таблицы может расти, если не выполнять VACUUM.
 
-6. БЛОКИРОВКИ (LOCKING)
+5.1. MVCC — добавим про xmin и xmax и "проблему 2 млрд"
+Проблема: Transaction ID Wraparound (переполнение счётчика транзакций)
+* xmin и xmax — это 32-битные числа. Максимальное значение — около 2 миллиардов.
+* Когда счётчик транзакций достигает этого предела, он переполняется и начинается с 1.
+* PostgreSQL использует «кольцевой» счётчик. Чтобы понять, какая транзакция старше, используется vacuum_freeze_min_age.
 
+Симптомы:
+* База внезапно начинает падать с ошибкой database is not accepting commands to avoid wraparound data loss in database "...".
+* AUTOVACUUM не успевает «замораживать» старые строки.
+
+Решение:
+* Включить AUTOVACUUM.
+* Мониторить возраст транзакций: SELECT age(datfrozenxid) FROM pg_database;
+* Если возраст подходит к 500 млн — выполнить VACUUM FREEZE.
+
+В целом:
+В PostgreSQL есть скрытая проблема — wraparound transaction IDs. Если не выполнять VACUUM и не замораживать старые строки,
+база может перестать принимать запросы. Поэтому всегда надо следить за возрастом транзакций через мониторинг.
+
+6. БЛОКИРОВКИ (LOCKING)
 Блокировки нужны, когда MVCC недостаточно (например, для обновления с проверкой).
 
   6.1. FOR UPDATE — пессимистичная блокировка
-
-    Блокирует строки, чтобы другие транзакции не могли их изменить или заблокировать.
-
+Блокирует строки, чтобы другие транзакции не могли их изменить или заблокировать.
     Пример:
       BEGIN;
       SELECT balance FROM accounts WHERE id = 1 FOR UPDATE;
@@ -145,7 +156,6 @@ PostgreSQL использует MVCC для реализации изоляци�
       FOR UPDATE SKIP LOCKED — пропустить заблокированные строки.
 
   6.2. SKIP LOCKED — очередь задач
-
     Используется для реализации очередей: несколько воркеров берут задачи,
     пропуская уже заблокированные.
 
@@ -162,7 +172,6 @@ PostgreSQL использует MVCC для реализации изоляци�
       RETURNING *;
 
   6.3. Deadlock (взаимная блокировка)
-
     Две транзакции ждут друг друга.
 
     Пример:
@@ -178,7 +187,6 @@ PostgreSQL использует MVCC для реализации изоляци�
       - Используй оптимистичные блокировки.
 
 7. ОПТИМИСТИЧНАЯ БЛОКИРОВКА (VERSIONING)
-
 Вместо блокировки строк (FOR UPDATE) используется проверка версии.
 
   Пример:
@@ -197,7 +205,84 @@ PostgreSQL использует MVCC для реализации изоляци�
   Недостатки:
     - При высокой конкуренции много повторных попыток.
     - Нужно реализовывать логику повторов на стороне приложения.
-	*/
+
+8. ФИШКИ
+1: READ COMMITTED — самый опасный уровень для бизнес-логики
+Суть: В READ COMMITTED каждое новое утверждение (SELECT, UPDATE) внутри транзакции видит новый снимок данных.
+Это означает, что ты можешь прочитать строку, принять решение на основе неё, а потом обновить её, но к моменту UPDATE данные уже изменились.
+
+Пример из жизни:
+-- Транзакция А
+BEGIN;
+SELECT balance FROM accounts WHERE id = 1;  -- 1000
+-- Транзакция Б
+UPDATE accounts SET balance = 900 WHERE id = 1; COMMIT;
+-- Транзакция А
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;  -- обновляет 900 → 800
+COMMIT;
+Транзакция А думала, что списывает 100 от 1000, но фактически списала 100 от 900. Это баг!
+Как исправить: Использовать REPEATABLE READ или SELECT ... FOR UPDATE.
+
+В READ COMMITTED данные могут меняться между запросами внутри транзакции. Это может приводить к логическим ошибкам,
+если ты читаешь данные и потом обновляешь на их основе. Для таких операций я использую REPEATABLE READ или FOR UPDATE.
+
+2: Serialization Failure — как с этим жить
+Суть: На уровне SERIALIZABLE PostgreSQL может выбросить ошибку could not serialize access due to concurrent update или
+serialization_failure. Это не баг, это защита от аномалий.
+
+Что делать: Нужно повторять транзакцию в коде (Go, Java, Python).
+Пример в Go:
+for attempts := 0; attempts < 3; attempts++ {
+    tx, _ := pool.Begin(ctx)
+    tx.Exec(ctx, "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+    err := tx.QueryRow(ctx, "UPDATE accounts ...").Scan()
+    if err == nil {
+        tx.Commit(ctx)
+        return nil
+    }
+    tx.Rollback(ctx)
+    if isSerializationError(err) {
+        time.Sleep(time.Duration(rand.Intn(100)) * time.Millisecond)
+        continue
+    }
+    return err
+}
+При использовании SERIALIZABLE нужно быть готовым к ошибкам сериализации. Всегда реализую повторные попытки
+с экспоненциальной задержкой, чтобы автоматически обрабатывать такие ситуации.
+
+3: FOR UPDATE и индексы — критическая зависимость
+Суть: FOR UPDATE без индекса может заблокировать всю таблицу, а не только нужные строки.
+
+Пример:
+-- Нет индекса на status → блокировка всей таблицы!
+SELECT * FROM tasks WHERE status = 'pending' FOR UPDATE;
+Как исправить: Создать индекс на status.
+
+Всегда надо проверять, есть ли индекс на условия в FOR UPDATE. Без индекса блокировка может
+распространиться на всю таблицу, что приведёт к падению производительности.
+
+4: «SKIP LOCKED + ORDER BY = идеальная очередь»
+Суть: В очереди задач с SKIP LOCKED важно использовать ORDER BY, чтобы гарантировать,
+что задачи обрабатываются в правильном порядке (например, по приоритету или по дате создания).
+
+Пример:
+BEGIN;
+WITH locked AS (
+    SELECT id FROM tasks
+    WHERE status = 'pending'
+    ORDER BY priority DESC, created_at  -- Важно!
+    LIMIT 10
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE tasks SET status = 'processing'
+FROM locked
+WHERE tasks.id = locked.id
+RETURNING *;
+COMMIT;
+
+Для очередей задач можно использую SKIP LOCKED с ORDER BY, чтобы гарантировать, что задачи обрабатываются в нужном порядке,
+а воркеры не блокируют друг друга.
+*/
 
 -- Таблица счетов (для переводов)
 CREATE TABLE accounts (
@@ -269,7 +354,7 @@ ROLLBACK;
 BEGIN;
 UPDATE accounts SET balance = balance - 50 WHERE id = 3;
 SAVEPOINT before_second_update;
-UPDATE account SET balance = balance - 200 WHERE id = 3;
+UPDATE accounts SET balance = balance - 200 WHERE id = 3;
 ROLLBACK TO SAVEPOINT before_second_update;
 COMMIT;
 -- Пояснение: первое обновление зафиксировалось, второе откатилось.
@@ -286,8 +371,8 @@ COMMIT;
 -- 2.2 Блокировка нескольких строк
 BEGIN;
 SELECT balance FROM accounts WHERE id IN (1, 2) FOR UPDATE;
-UPDATE acconts SET balance = balance - 50 WHERE id = 1;
-UPDATE acconts SET balance = balance - 50 WHERE id = 2;
+UPDATE accounts SET balance = balance - 50 WHERE id = 1;
+UPDATE accounts SET balance = balance - 50 WHERE id = 2;
 COMMIT;
 
 -- Пояснение: блокируем сразу несколько строк.
@@ -308,7 +393,7 @@ COMMIT;
 
 -- 2.5 FOR UPDATE OF — блокировка только указанных таблиц
 BEGIN;
-SELECT a.balance, o.amount
+SELECT a.balance, o.quantity
 FROM accounts a
 JOIN orders o ON a.id = o.user_id
 WHERE a.id = 1
@@ -363,7 +448,7 @@ WHERE id = (
 )
 RETURNING *;
 COMMIT;
- Пояснение: сначала задачи с высоким приоритетом.
+--Пояснение: сначала задачи с высоким приоритетом.
 
 -- 3.4 SKIP LOCKED + RETURNING для логирования
 BEGIN;
@@ -387,7 +472,7 @@ BEGIN;
 SELECT balance, version FROM accounts WHERE id = 1; --version = 1
 UPDATE accounts
 SET balance = balance - 100, version = version + 1
-WHERE id = 1 AND varsion = 1;
+WHERE id = 1 AND version = 1;
 -- Если обновлено 0 строк → конфликт
 COMMIT;
 -- Пояснение: только одна транзакция может обновить строку.
@@ -467,7 +552,7 @@ SELECT balance FROM accounts WHERE id = 1; -- 1000 (snapshot!)
 COMMIT;
 -- Пояснение: в REPEATABLE READ данные не меняются.
 
-6. DEADLOCK
+--6. DEADLOCK
 -- 6.1 Пример deadlock (запускать параллельно)
 -- Сессия 1:
 BEGIN;
