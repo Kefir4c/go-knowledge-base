@@ -14,6 +14,18 @@
     * Числа преобразуются в бинарное представление.
   - Бинарное представление позволяет извлекать значения без повторного парсинга (в отличие от JSON).
 
+1.1.1.
+Добавлю важный нюанс про сжатие:
+JSONB, как и любой большой объект в PostgreSQL, может быть сжат через механизм TOAST (The Oversized-Attribute Storage Technique).
+Если JSONB-документ превышает ~2 КБ, он автоматически сжимается и хранится отдельно от основной строки таблицы.
+
+Как это влияет на производительность:
+Чтение сжатого JSONB требует распаковки, что добавляет накладные расходы.
+Если ты часто читаешь большие JSONB-документы целиком, это может быть медленно.
+
+Для часто читаемых больших документов хранить их можно в несжатом виде,
+изменяя параметры хранения колонки (ALTER TABLE ... SET STORAGE EXTERNAL)
+
 1.2. JSON vs JSONB — ПОЛНОЕ СРАВНЕНИЕ
 
   Характеристика          | JSON                     | JSONB
@@ -63,6 +75,8 @@
     - Если используются только запросы @> (проверка вхождения).
     - Если важна экономия места на диске.
     - Если не нужны операторы существования ключей (?).
+    * Размер индекса с jsonb_path_ops обычно на 30-50% меньше, чем с обычным GIN.
+    * Скорость поиска по @> с jsonb_path_ops может быть выше на 20-30%.
 
 1.5. ИНДЕКСАЦИЯ КОНКРЕТНЫХ ПОЛЕЙ
 
@@ -75,6 +89,19 @@
     - Поле часто используется в WHERE с оператором =.
     - Нужна уникальность (UNIQUE INDEX).
     - Нужна сортировка (ORDER BY).
+
+1.5.1
+ИНДЕКСАЦИЯ КОНКРЕТНЫХ ПОЛЕЙ — добавим нюанс про NULL и COALESCE
+Добавлю важный нюанс:
+Если у тебя есть поле, которое часто бывает NULL, и ты ищешь по нему,
+индекс будет работать только для ненулевых значений.
+
+Как обойти:
+-- Индекс, который учитывает NULL
+CREATE INDEX idx_email_not_null ON notification_settings ((settings->>'email')) WHERE settings->>'email' IS NOT NULL;
+
+Или использовать COALESCE для подстановки значения по умолчанию:
+CREATE INDEX idx_email_coalesce ON notification_settings ((COALESCE(settings->>'email', '')));
 
 1.6. ВАЛИДАЦИЯ JSONB СХЕМЫ
 
@@ -120,6 +147,7 @@
     - Хранение внешних данных (API-ответы).
     - Логи, события, аудит.
     - Прототипирование (быстрая смена структуры).
+    - JSONB отлично подходит для реализации EAV-подобных моделей, когда у разных сущностей разные атрибуты.
 
   ❌ Плохо:
     - Часто обновляемые поля (накладные расходы).
@@ -333,9 +361,9 @@ WHERE  settings ?& ARRAY['email', 'push', 'channels'];
 CREATE INDEX idx_notification_settings_gin ON notification_settings USING GIN (settings);
 
 -- 2.6.2. Более компактный индекс (jsonb_path_ops) — только для @>
-CREATE INDEX idx_notification_settings_gin_path_ops ON notification_settings USING GIN (setthings jsonb_path_ops);
+CREATE INDEX idx_notification_settings_gin_path_ops ON notification_settings USING GIN (settings jsonb_path_ops);
 
-CREATE INDEX idx_notification_settings_email ON notification_settings ((setting ->> 'email'));
+CREATE INDEX idx_notification_settings_email ON notification_settings ((settings ->> 'email'));
 
 CREATE INDEX idx_notification_settings_telegram ON notification_settings ((settings #> '{channels, telegram}'));
 
@@ -465,7 +493,7 @@ SELECT user_id, settings
 FROM notification_settings
 WHERE settings = '{"email": true}'::JSONB;
 
---СЛОЖНЫЕ ПРИМЕРЫ УРОВНЯ SENIOR ДЛЯ JSONB 
+--СЛОЖНЫЕ ПРИМЕРЫ ДЛЯ JSONB
 -- 1. КОМБИНИРОВАННЫЙ ПОИСК С РАЗВОРАЧИВАНИЕМ МАССИВОВ
 -- Найти пользователей, у которых есть тег 'urgent' И включен email И
 -- language = 'ru' (если поле language есть)
@@ -576,7 +604,7 @@ WITH tag_expanded AS (
         settings @> '{"email": true}' AS has_email
     FROM notification_settings,
          jsonb_array_elements_text(settings->'tags') AS tag     
-    WHERE setting ? 'tags'     
+    WHERE settings ? 'tags'
 )
 SELECT
     tag,
