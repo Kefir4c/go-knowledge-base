@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-=======
-
 --В этом файле я буду решать задачи sql.
 -- Буду брать задачи и решать их из разных сайтов, ИИ и т.п.
 
@@ -240,7 +237,6 @@ ORDER BY created_at;
  CREATE INDEX idx_orders_created_status ON orders (created_at,status)
 
 
->>>>>>> 25a55fd
 /*
 Топ-3 товара по категориям
 Условие:
@@ -288,12 +284,7 @@ SELECT
     rank_in_category
 FROM ranked
 WHERE rank_in_category <= 3
-<<<<<<< HEAD
 ORDER BY category_name, rank_in_category;     
-
-=======
-ORDER BY category_name, rank_in_category;
-
 /*
 Условие:
 Таблица employees:
@@ -359,4 +350,3 @@ SELECT
 FROM grouped
 GROUP BY user_id, grp
 ORDER BY user_id, start_date;    
->>>>>>> 25a55fd
