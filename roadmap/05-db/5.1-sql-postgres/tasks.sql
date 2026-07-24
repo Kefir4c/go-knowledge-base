@@ -286,3 +286,69 @@ SELECT
 FROM ranked
 WHERE rank_in_category <= 3
 ORDER BY category_name, rank_in_category;
+
+/*
+Условие:
+Таблица employees:
+id
+name
+department
+salary
+
+Напиши запрос, который для каждого отдела выводит:
+department
+max_salary — максимальная зарплата в отделе
+employee_name — имя сотрудника с этой зарплатой 
+(если несколько — любого, можно через FIRST_VALUE или DISTINCT ON)
+*/
+WITH dep_sal AS(
+    SELECT
+    department,
+    name AS employee_name
+    salary AS max_salary
+    DENSE_RANK() OVER(PARTITION BY deprtment ORDER BY MAX(salary) DESC) AS rank
+FROM employees   
+)
+SELECT
+    department,
+    max_salary,
+    employee_name
+FROM dep_sal
+WHERE rank = 1;      
+
+/*
+«Gaps and Islands» (поиск непрерывных серий)
+Условие:
+Есть таблица user_visits:
+user_id
+visit_date (date)
+
+В ней хранятся даты посещений пользователем сайта. Нужно для каждого 
+пользователя найти непрерывные серии посещений (подряд идущие дни) и показать:
+
+user_id
+start_date — дата начала серии
+end_date — дата окончания серии
+visit_count — количество дней в серии
+*/
+WITH numbered AS(
+    SELECT
+        user_id,
+        visit_date,
+        ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY visit_date) AS rnk
+    FROM user_visits    
+),
+grouped AS (
+    user_id,
+    visit_date,
+    visit_date - rnk * INTERVAL '1 day' AS grp
+FROM nubmered    
+)
+SELECT
+    user_id,
+    MIN(visit_date) AS start_date,
+    MAX(visit_date) AS end_date,
+    COUNT(*) AS visit_count
+FROM grouped
+GROUP BY user_id, grp
+ORDER BY user_id, start_date;    
