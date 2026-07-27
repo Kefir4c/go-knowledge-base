@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -287,23 +289,165 @@ func primer1() {
 }
 
 // 2. DEL и EXISTS
-func primer2() {}
+func primer2() {
+	fmt.Println("--- 2. DEL / EXISTS ---")
+	key := "temp"
+	rdb.Set(ctx, key, "value", 0)
+
+	// Проверяем существование
+	exists, _ := rdb.Exists(ctx, key).Result()
+	fmt.Printf("EXISTS temp = %d (1 - есть)\n", exists)
+
+	// Удаляем
+	deleted, _ := rdb.Del(ctx, key).Result()
+	fmt.Printf("DEL temp -> удалено %d ключей\n", deleted)
+
+	// Проверяем снова
+	exists, _ = rdb.Exists(ctx, key).Result()
+	fmt.Printf("EXISTS после DEL = %d (0 - нет)\n", exists)
+
+	fmt.Println()
+}
 
 // 3. EXPIRE и TTL
-func primer3() {}
+func primer3() {
+	fmt.Println("--- 3. EXPIRE / TTL ---")
+	key := "session:abc"
+	rdb.Set(ctx, key, "active", 0)
+
+	// Устанавливаем TTL = 5 секунд
+	ok, _ := rdb.Expire(ctx, key, 5*time.Second).Result()
+
+	fmt.Printf("EXPIRE session:abc 5s -> %v\n", ok)
+
+	// Проверяем TTL
+	ttl, _ := rdb.TTL(ctx, key).Result()
+	fmt.Printf("TTL = %v\n", ttl)
+
+	// Ждём 6 секунд и проверяем
+	time.Sleep(6 * time.Second)
+	_, err := rdb.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		fmt.Println("Ключ истёк и удалён")
+	}
+	fmt.Println("Ключ всё ещё существует (ошибка)")
+}
 
 // 4. INCR и DECR
-func primer4() {}
+func primer4() {
+	fmt.Println("--- 4. INCR / DECR ---")
+	key := "views"
+
+	// Устанавливаем начальное значение
+	rdb.Set(ctx, key, 10, 0)
+
+	// Инкремент
+	newVal, _ := rdb.Incr(ctx, key).Result()
+	fmt.Printf("INCR -> %d\n", newVal)
+
+	// Декремент
+	newVal, _ = rdb.Decr(ctx, key).Result()
+	fmt.Printf("DECR -> %d\n", newVal)
+
+	// Инкремент на пустом ключе (создаётся со значением 0)
+	emptyKey := "newcounter"
+	val, _ := rdb.Incr(ctx, emptyKey).Result()
+	fmt.Printf("INCR на несуществующем ключе -> %d (установлен 0+1)\n", val)
+
+	// Попытка инкремента на строке
+	rdb.Set(ctx, "bad", "abc", 0)
+	_, err := rdb.Incr(ctx, "bad").Result()
+	if err != nil {
+		fmt.Printf("Ошибка INCR на 'abc': %v\n", err)
+	}
+	rdb.Del(ctx, key, emptyKey, "bad")
+}
 
 // 5. APPEND и STRLEN
-func primer5() {}
+func primer5() {
+	fmt.Println("--- 5. APPEND / STRLEN ---")
+	key := "msg"
+	rdb.Set(ctx, key, "Hello", 0)
+
+	// Добавляем
+	newLen, _ := rdb.Append(ctx, key, "World").Result()
+	fmt.Printf("APPEND -> новая длина = %d\n", newLen)
+
+	// Длина строки
+	length, _ := rdb.StrLen(ctx, key).Result()
+	fmt.Printf("STRLEN msg = %d\n", length)
+
+	rdb.Del(ctx, key)
+}
 
 // 6. Комбинированный сценарий: счётчик просмотров с TTL
-func primer6() {}
+func primer6() {
+	fmt.Println("--- 6. Комбо: счётчик + TTL ---")
+	userID := "42"
+	key := "views" + userID
+
+	// Увеличиваем счётчик
+	newVal, _ := rdb.Incr(ctx, key).Result()
+	fmt.Printf("Просмотров: %d\n", newVal)
+
+	// Устанавливаес TTL
+	rdb.Expire(ctx, key, 10*time.Second)
+	ttl, _ := rdb.TTL(ctx, key).Result()
+	fmt.Printf("TTL = %v\n", ttl)
+
+	// Получаем значение
+	val, _ := rdb.Get(ctx, key).Result()
+	fmt.Printf("Текущее значение: %s\n", val)
+
+	// Увеличиваем ещё раз
+	rdb.Incr(ctx, key)
+	val, _ = rdb.Get(ctx, key).Result()
+	fmt.Printf("После ещё одного просмотра: %s\n", val)
+
+	// Очистка
+	rdb.Del(ctx, key)
+}
 
 // 7. Работа с redis.Nil (обработка отсутствия ключа)
-func primer7() {}
+func primer7() {
+	fmt.Println("--- 7. Обработка redis.Nil ---")
+	key := "unknown"
+
+	val, err := rdb.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		fmt.Println("GET unknown -> redis.Nil (ключа нет)")
+	} else if err != nil {
+		panic(err)
+	} else {
+		fmt.Printf("Значение: %s\n", val)
+	}
+
+	// EXISTS тоже показывает 0
+	exists, _ := rdb.Exists(ctx, key).Result()
+	fmt.Printf("EXISTS unknown = %d\n", exists)
+
+	// TTL для отсутствующего ключа возвращает -2
+	ttl, _ := rdb.TTL(ctx, key).Result()
+	fmt.Printf("TTL unknown = %v (-2 - ключа нет)\n", ttl)
+}
 
 // 8. Проверка TTL после PERSIST (добавим PERSIST, хоть и не в списке,
 // но это часть работы с TTL, можно упомянуть)
-func primer8() {}
+func primer8() {
+	fmt.Println("--- 8. PERSIST (снятие TTL) ---")
+	key := "temp"
+	rdb.Set(ctx, key, "value", 0).Result()
+	rdb.Expire(ctx, key, 10*time.Second)
+
+	ttlBefore, _ := rdb.TTL(ctx, key).Result()
+	fmt.Printf("TTL до PERSIST: %v\n", ttlBefore)
+
+	// Снимаем TTL
+	ok, _ := rdb.Persist(ctx, key).Result()
+	fmt.Printf("PERSIST -> %v\n", ok)
+
+	ttlAfter, _ := rdb.TTL(ctx, key).Result()
+	fmt.Printf("TTL после PERSIST: %v (-1 - бессрочный)\n", ttlAfter)
+
+	rdb.Del(ctx, key)
+}
