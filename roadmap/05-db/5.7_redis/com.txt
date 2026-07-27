@@ -1,0 +1,15 @@
+0. Подготовка (делается один раз)
+
+Запусти Redis через Docker:
+docker run -d --name redis-lab -p 6379:6379 redis
+
+Установи Go-клиент (в корне проекта):
+go get github.com/redis/go-redis/v9
+
+Открой два терминала:
+Терминал 1 – для redis-cli (консоль Redis)
+Терминал 2 – для запуска Go-кода (go run)
+
+1. Изучаем команды в redis-cli (Terminal 1)
+Подключаемся:
+docker exec -it redis-lab redis-cli
