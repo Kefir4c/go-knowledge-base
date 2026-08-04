@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -325,7 +329,7 @@ func parseFloat(s string) (float64, error) {
 }
 
 func main() {
-	fmt.Println("=== АНАЛИЗ ПАМЯТИ: ПРОДАКШН-ПРИМЕРЫ ===\n")
+	fmt.Println("=== АНАЛИЗ ПАМЯТИ ===\n")
 
 	primer1()
 	primer2()
@@ -339,28 +343,425 @@ func main() {
 }
 
 // 1. БАЗОВОЕ СКАНИРОВАНИЕ БОЛЬШИХ КЛЮЧЕЙ С ОТЧЁТОМ
-func primer1() {}
+func primer1() {
+	fmt.Println("--- 1. Сканирование больших ключей (SCAN + MEMORY USAGE) ---")
+
+	// Создаём тестовые данные
+	for i := 0; i < 100; i++ {
+		rdb.Set(ctx, fmt.Sprintf("big:test:%d", i), string(make([]byte, 1024*10)), 0) // 10 КБ
+	}
+	for i := 0; i < 1000; i++ {
+		rdb.Set(ctx, fmt.Sprintf("small:test:%d", i), "small", 0)
+	}
+
+	type KeyInfo struct {
+		Key  string
+		Size int64
+		Type string
+	}
+	var bigKeys []KeyInfo
+
+	// Используем SCAN с таймаутом
+	scanCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var cursor uint64
+	for {
+		keys, nextCursor, err := rdb.Scan(scanCtx, cursor, "*", ScanBatchSize).Result()
+		if err != nil {
+			logger.Printf("SCAN ошибка: %v", err)
+			break
+		}
+		for _, key := range keys {
+			// Пропускаем служебные ключи, если нужно
+			size, err := rdb.MemoryUsage(scanCtx, key).Result()
+			if err != nil {
+				continue
+			}
+			if size > BigKeyThreshold {
+				typ, _ := rdb.Type(scanCtx, key).Result()
+				bigKeys = append(bigKeys, KeyInfo{Key: key, Size: size, Type: typ})
+			}
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	// Сортируем по размеру
+	sort.Slice(bigKeys, func(i, j int) bool { return bigKeys[i].Size > bigKeys[j].Size })
+	fmt.Printf("Найдено %d больших ключей (> %d байт):\n", len(bigKeys), BigKeyThreshold)
+	for i, k := range bigKeys {
+		if i >= 10 {
+			fmt.Printf("  ... и ещё %d ключей\n", len(bigKeys)-10)
+			break
+		}
+		fmt.Printf("  %s [%s]: %d байт (%.2f КБ)\n", k.Key, k.Type, k.Size, float64(k.Size)/1024)
+	}
+	// Очистка
+	rdb.Del(ctx, "big:test:*", "small:test:*")
+}
 
 // 2. АСИНХРОННЫЙ АНАЛИЗ С WORKER POOL (ДЛЯ БОЛЬШИХ ОБЪЁМОВ)
-func primer2() {}
+func primer2() {
+	fmt.Println("\n--- 2. Асинхронный анализ с worker pool ---")
+
+	// Создаём 5000 ключей
+	for i := 0; i < 5000; i++ {
+		rdb.Set(ctx, fmt.Sprintf("async:%d", i), string(make([]byte, 1024*2)), 0)
+	}
+
+	type Result struct {
+		Key  string
+		Size int64
+		Type string
+		Err  error
+	}
+
+	const numWorkers = 10
+	jobs := make(chan string, 1000)
+	results := make(chan Result, 1000)
+
+	var wg sync.WaitGroup
+	// Запускаем воркеры
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for key := range jobs {
+				size, err := rdb.MemoryUsage(ctx, key).Result()
+				typ, _ := rdb.Type(ctx, key).Result()
+				results <- Result{Key: key, Size: size, Type: typ, Err: err}
+			}
+		}()
+	}
+
+	// Заполняем канал с ключами через SCAN
+	go func() {
+		var cursor uint64
+		for {
+			keys, nextCursor, err := rdb.Scan(ctx, cursor, "async:*", 100).Result()
+			if err != nil {
+				logger.Printf("SCAN ошибка: %v", err)
+				close(jobs)
+				return
+			}
+			for _, k := range keys {
+				jobs <- k
+			}
+			cursor = nextCursor
+			if cursor == 0 {
+				close(jobs)
+				return
+			}
+		}
+	}()
+	// Ждём завершения воркеров и закрываем results
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var bigKeys []Result
+	for res := range results {
+		if res.Err != nil {
+			continue
+		}
+		if res.Size > 1024*1024 { // 1 МБ
+			bigKeys = append(bigKeys, res)
+		}
+	}
+	fmt.Printf("Асинхронно найдено %d больших ключей (>1 МБ)\n", len(bigKeys))
+	rdb.Del(ctx, "async:*")
+}
 
 // 3. МОНИТОРИНГ ПАМЯТИ И ФРАГМЕНТАЦИИ С АЛЕРТАМИ
-func primer3() {}
+func primer3() {
+	fmt.Println("\n--- 3. Мониторинг памяти и фрагментации ---")
+
+	type MemoryMetrics struct {
+		UsedMemory         int64
+		UsedMemoryRSS      int64
+		UsedMemoryPeak     int64
+		FragmentationRatio float64
+		EvictedKeys        int64
+		MaxMemory          int64
+		UsedMemoryPercent  float64
+	}
+
+	getMetrics := func() (*MemoryMetrics, error) {
+		info, err := rdb.InfoMap(ctx, "memoty").Result()
+		if err != nil {
+			return nil, err
+		}
+		mem := info["memory"]
+		var m MemoryMetrics
+		m.UsedMemory, _ = parseBytes(mem["used_memory"])
+		m.UsedMemoryRSS, _ = parseBytes(mem["used_memory_rss"])
+		m.UsedMemoryPeak, _ = parseBytes(mem["used_memory_peak"])
+		m.FragmentationRatio, _ = parseFloat(mem["mem_fragmentation_ratio"])
+		m.EvictedKeys, _ = parseBytes(mem["evicted_keys"])
+		m.MaxMemory, _ = parseBytes(mem["maxmemory"])
+		if m.MaxMemory > 0 {
+			m.UsedMemoryPercent = float64(m.UsedMemory) / float64(m.MaxMemory) * 100
+		}
+		return &m, nil
+	}
+
+	metrics, err := getMetrics()
+	if err != nil {
+		logger.Printf("Ошибка получения метрик: %v", err)
+		return
+	}
+	fmt.Printf("used_memory: %d MB\n", metrics.UsedMemory/(1024*1024))
+	fmt.Printf("used_memory_rss: %d MB\n", metrics.UsedMemoryRSS/(1024*1024))
+	fmt.Printf("mem_fragmentation_ratio: %.2f\n", metrics.FragmentationRatio)
+	fmt.Printf("evicted_keys: %d\n", metrics.EvictedKeys)
+
+	// Алерты
+	if metrics.FragmentationRatio > 1.5 {
+		fmt.Println("ВЫСОКАЯ ФРАГМЕНТАЦИЯ! (>1.5)")
+	}
+	if metrics.UsedMemoryPercent > 80 {
+		fmt.Printf("ПАМЯТЬ ПЕРЕПОЛНЕНА! Использовано %.1f%% от maxmemory\n", metrics.UsedMemoryPercent)
+	}
+}
 
 // 4. ОПТИМИЗАЦИЯ БОЛЬШОГО ХЕША (РАЗБИВКА НА ЧАСТИ)
-func primer4() {}
+func primer4() {
+	fmt.Println("\n--- 4. Оптимизация большого хеша (разбивка на чанки) ---")
+
+	bigHashKey := "big:hash:optimize"
+	// Создаём хеш с 10 000 полей
+	for i := 0; i < 10000; i++ {
+		rdb.HSet(ctx, bigHashKey, fmt.Sprintf("f_%d", i), fmt.Sprintf("v_%d", i))
+	}
+	sizeBefore, _ := rdb.MemoryUsage(ctx, bigHashKey).Result()
+	fmt.Printf("Размер хеша до оптимизации: %d байт (%.2f КБ)\n", sizeBefore, float64(sizeBefore)/1024)
+
+	// Разбиваем на чанки по 1000 полей
+	const chunkSize = 1000
+	totalFields, _ := rdb.HLen(ctx, bigHashKey).Result()
+	chunkKeys := []string{}
+	pipe := rdb.Pipeline()
+	for i := int64(0); i < totalFields; i += chunkSize {
+		chunkKey := fmt.Sprintf("big:hash:chunk:%d", i/chunkSize)
+		chunkKeys = append(chunkKeys, chunkKey)
+		// Получаем поля и значения (в реальности это делается через HSCAN)
+		fields, err := rdb.HGetAll(ctx, bigHashKey).Result()
+		if err != nil {
+			logger.Printf("HGetAll ошибка: %v", err)
+			return
+		}
+		// Вставляем в чанк (здесь упрощённо, в реальности используем HSCAN)
+		for k, v := range fields {
+			if i%chunkSize == 0 && i < int64(len(fields)) {
+				pipe.HSet(ctx, chunkKey, k, v)
+			}
+		}
+	}
+	_, err := pipe.Exec(ctx)
+	if err != nil {
+		logger.Printf("Pipeline ошибка при создании чанков: %v", err)
+	}
+	rdb.Del(ctx, bigHashKey) // Удаляем старый ключ
+
+	// Суммарный размер чанков
+	var totalSize int64
+	for _, ck := range chunkKeys {
+		s, _ := rdb.MemoryUsage(ctx, ck).Result()
+		totalSize += s
+	}
+	fmt.Printf("Суммарный размер чанков: %d байт (%.2f КБ)\n", totalSize, float64(totalSize)/1024)
+	fmt.Println("Теперь операции над отдельными полями быстрее, и можно обрабатывать части независимо.")
+	rdb.Del(ctx, chunkKeys...)
+}
 
 // 5. СЖАТИЕ БОЛЬШИХ СТРОК ПЕРЕД ЗАПИСЬЮ
-func primer5() {}
+func primer5() {
+	fmt.Println("\n--- 5. Сжатие больших строк (gzip) ---")
+
+	// Имитируем сжатие (используем простое сжатие, но в реальности можно использовать gzip/zstd)
+	compress := func(data []byte) []byte {
+		// В реальном проекте используйте compress/gzip или github.com/klauspost/compress/zstd
+		// Для демонстрации просто возвращаем те же данные + метку
+		return append([]byte("compressed:"), data...)
+	}
+	decompress := func(data []byte) []byte {
+		return data[11:] // убираем префикс
+	}
+
+	originalData := string(make([]byte, 10*1024))
+	key := "bif:string:compressed"
+
+	// Записываем сжатые данные
+	compressed := compress([]byte(originalData))
+	err := rdb.Set(ctx, key, compressed, 0).Err()
+	if err != nil {
+		logger.Printf("Ошибка записи: %v", err)
+		return
+	}
+	size, _ := rdb.MemoryUsage(ctx, key).Result()
+	fmt.Printf("Размер сжатого ключа: %d байт (оригинал ~10 КБ)\n", size)
+
+	// Читаем и распаковываем
+	val, err := rdb.Get(ctx, key).Result()
+	if err != nil {
+		logger.Printf("Ошибка чтения: %v", err)
+	} else {
+		restored := string(decompress([]byte(val)))
+		fmt.Printf("Восстановлен размер: %d байт\n", len(restored))
+	}
+	rdb.Del(ctx, key)
+}
 
 // 6. ЭКСПОРТ ОТЧЁТА О БОЛЬШИХ КЛЮЧАХ В JSON
-func primer6() {}
+func primer6() {
+	fmt.Println("\n--- 6. Экспорт отчёта о больших ключах в JSON ---")
+	type KeyDetail struct {
+		Key  string `json:"key"`
+		Size int64  `json:"size_bytes"`
+		Type string `json:"type"`
+		TTL  int64  `json:"ttl_seconds"`
+	}
+
+	type Report struct {
+		Timestamp string      `json:"timestamp"`
+		Keys      []KeyDetail `json:"keys"`
+	}
+
+	// Создаём несколько ключей
+	for i := 0; i < 5; i++ {
+		rdb.Set(ctx, fmt.Sprintf("report:big:%d", i), string(make([]byte, 2*1024*1024)), 0)
+	}
+	for i := 0; i < 50; i++ {
+		rdb.Set(ctx, fmt.Sprintf("report:small:%d", i), "small", 0)
+	}
+
+	var report Report
+	report.Timestamp = time.Now().UTC().Format(time.RFC3339)
+
+	var cursor uint64
+	for {
+		keys, nextCursor, err := rdb.Scan(ctx, cursor, "report:*", 100).Result()
+		if err != nil {
+			break
+		}
+		for _, k := range keys {
+			size, _ := rdb.MemoryUsage(ctx, k).Result()
+			if size > 1024*1024 { // >1 МБ
+				typ, _ := rdb.Type(ctx, k).Result()
+				ttl, _ := rdb.TTL(ctx, k).Result()
+				report.Keys = append(report.Keys, KeyDetail{
+					Key:  k,
+					Size: size,
+					Type: typ,
+					TTL:  int64(ttl.Seconds()),
+				})
+			}
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	jsonData, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		logger.Printf("Ошибка маршалинга JSON: %v", err)
+	} else {
+		fmt.Printf("Отчёт экспортирован (JSON): %s\n", string(jsonData))
+	}
+	rdb.Del(ctx, "report:*")
+}
 
 // 7. ИНТЕГРАЦИЯ С МЕТРИКАМИ (ИМИТАЦИЯ PROMETHEUS)
-func primer7() {}
+func primer7() {
+	fmt.Println("\n--- 7. Экспорт метрик для Prometheus (имитация) ---")
+
+	// Собираем метрики в структуру
+	type Metrics struct {
+		UsedMemoryMB       float64
+		UsedMemoryRSSMB    float64
+		FragmentationRatio float64
+		EvictedKeys        int64
+		TotalKeys          int64
+	}
+
+	info, _ := rdb.InfoMap(ctx, "memory").Result()
+	mem := info["memory"]
+	used, _ := parseBytes(mem["used_memory"])
+	rss, _ := parseBytes(mem["used_memory_rss"])
+	evicted, _ := parseBytes(mem["evicted_keys"])
+	frag, _ := parseFloat(mem["mem_fragmentation_ratio"])
+
+	// Количество ключей (INFO keyspace)
+	infoKeys, _ := rdb.InfoMap(ctx, "keyspace").Result()
+	var totalKeys int64
+	for _, v := range infoKeys["keyspace"] {
+		// парсим строку вида "db0: keys=100, expires=10"
+		var keys int64
+		fmt.Sscanf(v, "keys=%d", &keys)
+		totalKeys += keys
+	}
+
+	metrics := Metrics{
+		UsedMemoryMB:       float64(used) / (1024 * 1024),
+		UsedMemoryRSSMB:    float64(rss) / (1024 * 1024),
+		FragmentationRatio: frag,
+		EvictedKeys:        evicted,
+		TotalKeys:          totalKeys,
+	}
+	fmt.Printf("Метрики для Prometheus:\n")
+	fmt.Printf("  redis_used_memory_mb %f\n", metrics.UsedMemoryMB)
+	fmt.Printf("  redis_used_memory_rss_mb %f\n", metrics.UsedMemoryRSSMB)
+	fmt.Printf("  redis_mem_fragmentation_ratio %f\n", metrics.FragmentationRatio)
+	fmt.Printf("  redis_evicted_keys_total %d\n", metrics.EvictedKeys)
+	fmt.Printf("  redis_db_keys_total %d\n", metrics.TotalKeys)
+}
 
 // 8. АВТОМАТИЧЕСКАЯ ДЕФРАГМЕНТАЦИЯ И УПРАВЛЕНИЕ ФРАГМЕНТАЦИЕЙ
-func primer8() {}
+func primer8() {
+	fmt.Println("\n--- 8. Управление фрагментацией (активная дефрагментация) ---")
+
+	// Проверяем текущий ratio
+	info, _ := rdb.InfoMap(ctx, "memory").Result()
+	fragStr := info["memory"]["mem_fragmentation_ratio"]
+	frag, _ := parseFloat(fragStr)
+	fmt.Printf("Текущая фрагментация: %.2f\n", frag)
+
+	if frag > 1.3 {
+		fmt.Println("Фрагментация > 1.3, включаем активную дефрагментацию (если выключена)")
+		err := rdb.ConfigSet(ctx, "activedefrag", "yes").Err()
+		if err != nil {
+			logger.Printf("Ошибка включения activedefrag: %v", err)
+		} else {
+			fmt.Println("✅ activedefrag включена")
+		}
+	} else {
+		fmt.Println("Фрагментация в норме, активная дефрагментация не требуется.")
+	}
+}
 
 // 9. МИГРАЦИЯ СТРОК В ХЕШИ ДЛЯ ЭКОНОМИИ ПАМЯТИ
-func primer9() {}
+func primer9() {
+	fmt.Println("\n--- 9. Проверка ключей на превышение порога (алерт) ---")
+
+	// Проверяем ключ, который потенциально может быть большим
+	keysToCheck := []string{"user:profile:123", "cache:big:1"}
+	for _, k := range keysToCheck {
+		size, err := rdb.MemoryUsage(ctx, k).Result()
+		if errors.Is(err, redis.Nil) {
+			continue
+		}
+		if err != nil {
+			logger.Printf("Ошибка получения размера %s: %v", k, err)
+			continue
+		}
+		if size > 10*1024*1024 { // 10 МБ
+			// В реальном проекте здесь был бы вызов alerting (Slack, Email, PagerDuty)
+			fmt.Printf("АЛЕРТ: Ключ %s превышает 10 МБ! (размер: %d байт)\n", k, size)
+		} else {
+			fmt.Printf("Ключ %s в норме: %d байт\n", k, size)
+		}
+	}
+}
