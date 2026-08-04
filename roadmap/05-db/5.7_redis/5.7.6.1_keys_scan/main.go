@@ -2,8 +2,10 @@ package keysscan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -223,7 +225,6 @@ COUNT — это подсказка серверу, сколько элемен�
    → Получить список мастеров и выполнить SCAN на каждом.
 
 14. ИТОГИ
-
 - KEYS — зло, запрещён в продакшне.
 - SCAN — безопасная альтернатива для итерации по ключам.
 - SCAN требует обработки дубликатов и возможных пропусков.
@@ -352,19 +353,252 @@ func primer2() {
 }
 
 // 3. ЭКСПОРТ ДАННЫХ С ОБРАБОТКОЙ ДУБЛИКАТОВ
-func primer3() {}
+func primer3() {
+	fmt.Println("\n--- 3. Экспорт данных (SCAN + дедупликация) ---")
+
+	// Создаём тестовые ключи (некоторые дублируются? Нет, ключи уникальны, но мы эмулируем)
+	for i := 0; i < 1500; i++ {
+		rdb.Set(ctx, fmt.Sprintf("export:%d", i), fmt.Sprintf("value_%d", i), 0)
+	}
+
+	// Экспортируем все ключи и значения в map (дедупликация)
+	exported := make(map[string]string) // ключ -> значение
+	var mu sync.Mutex
+
+	var cursor uint64
+	for {
+		keys, nextCursor, err := rdb.Scan(ctx, cursor, "export:*", 200).Result()
+		if err != nil {
+			logger.Printf("SCAN ошибка: %v", err)
+			break
+		}
+		if len(keys) > 0 {
+			// Читаем значения через MGET (или Pipeline)
+			pipe := rdb.Pipeline()
+			for _, key := range keys {
+				pipe.Get(ctx, key)
+			}
+			cmds, err := pipe.Exec(ctx)
+			if err != nil && err != redis.Nil {
+				logger.Printf("Pipeline GET ошибка: %v", err)
+			}
+			// Разбираем результаты
+			for i, cmd := range cmds {
+				if getCmd, ok := cmd.(*redis.StringCmd); ok {
+					val, err := getCmd.Result()
+					if err != nil {
+						if errors.Is(err, redis.Nil) {
+							continue // ключ мог быть удалён
+						}
+						logger.Printf("Ошибка GET для %s: %v", keys[i], err)
+						continue
+					}
+					mu.Lock()
+					exported[keys[i]] = val
+					mu.Unlock()
+				}
+			}
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	fmt.Printf("Экспортировано %d уникальных ключей\n", len(exported))
+	// Очистка
+	rdb.Del(ctx, func() []string {
+		keys, _ := rdb.Keys(ctx, "export:*").Result()
+		return keys
+	}()...)
+}
 
 // 4. АТОМАРНОЕ УДАЛЕНИЕ ПО ПАТТЕРНУ (LUA + SCAN)
-func primer4() {}
+func primer4() {
+	fmt.Println("\n--- 4. Атомарное удаление по паттерну (Lua-скрипт) ---")
+
+	// Создаём ключи
+	for i := 0; i < 3000; i++ {
+		rdb.Set(ctx, fmt.Sprintf("cache:item:%d", i), "data", 0)
+	}
+
+	script := redis.NewScript(`
+	local pattern = KEYS[1]
+	local batchSize = tonumber (ARGV[1])
+	local cursor = '0'
+	local deleted = 0
+
+	repeat
+		local result = redis.call("SCAN", cursor, 'MATCH', pattern, 'COUNT', batchSize)
+		cursor = result[1]
+		local keys = result[2]
+		if #keys > 0 then	
+			deleted = deleted + redis.call('DEL', unpack(keys))
+		end
+	until cursor == '0'
+
+	return deleted
+`)
+
+	// Выполняем скрипт
+	deleted, err := script.Run(ctx, rdb, []string{}, "cache:item:*", 100).Int()
+	if err != nil {
+		logger.Printf("Lua ошибка: %v", err)
+	} else {
+		fmt.Printf("Удалено %d ключей (атомарно)\n", deleted)
+	}
+}
 
 // 5. SSCAN И HSCAN (ДЛЯ МНОЖЕСТВ И ХЕШЕЙ)
-func primer5() {}
+func primer5() {
+	fmt.Println("\n--- 5. SSCAN (множество) и HSCAN (хеш) ---")
+
+	// Множество: 100 элементов
+	setKey := "myset"
+	for i := 0; i < 100; i++ {
+		rdb.SAdd(ctx, setKey, fmt.Sprintf("member_%d", i))
+	}
+	var countSet int
+	iterScan := rdb.SScan(ctx, setKey, 0, "", 20).Iterator()
+	for iterScan.Next(ctx) {
+		countSet++
+	}
+	if err := iterScan.Err(); err != nil {
+		logger.Printf("SSCAN ошибка: %v", err)
+	}
+	fmt.Printf("Множество: %d элементов\n", countSet)
+
+	// Хеш: 100 полей
+	hashKey := "myhash"
+	for i := 0; i < 100; i++ {
+		rdb.HSet(ctx, hashKey, fmt.Sprintf("field_%d", i), fmt.Sprintf("value_%d", i))
+	}
+	var countHash int
+	iterHash := rdb.HScan(ctx, hashKey, 0, "", 20).Iterator()
+	for iterHash.Next(ctx) {
+		countHash++
+	}
+	if err := iterHash.Err(); err != nil {
+		logger.Printf("HSCAN ошибка: %v", err)
+	}
+}
 
 // 6. ПОДСЧЁТ КЛЮЧЕЙ С ПРЕФИКСОМ (МОНИТОРИНГ)
-func primer6() {}
+func primer6() {
+	fmt.Println("\n--- 6. Подсчёт ключей с префиксом (мониторинг) ---")
+	for i := 0; i < 500; i++ {
+		if i%2 == 0 {
+			rdb.Set(ctx, fmt.Sprintf("typeA:%d", i), i, 0)
+		} else {
+			rdb.Set(ctx, fmt.Sprintf("typeB:%d", i), i, 0)
+		}
+	}
+	countKeys := func(pattern string) (int64, error) {
+		var count int64
+		iter := rdb.Scan(ctx, 0, pattern, 100).Iterator()
+		for iter.Next(ctx) {
+			count++
+		}
+		if err := iter.Err(); err != nil {
+			return 0, err
+		}
+		return count, nil
+	}
+
+	countA, _ := countKeys("typeA:*")
+	countB, _ := countKeys("typeB:*")
+	fmt.Printf("typeA: %d ключей, typeB: %d ключей\n", countA, countB)
+
+	// Очистка
+	keysA, _ := rdb.Keys(ctx, "typeA:*").Result()
+	keysB, _ := rdb.Keys(ctx, "typeB:*").Result()
+	rdb.Del(ctx, append(keysA, keysB...)...)
+}
 
 // 7. КОНКУРЕНТНЫЙ SCAN (НЕСКОЛЬКО ГОРУТИН)
-func primer7() {}
+func primer7() {
+	fmt.Println("\n--- 7. Конкурентный обход ключей (несколько горутин) ---")
+
+	for i := 0; i < 1000; i++ {
+		rdb.Set(ctx, fmt.Sprintf("concurrent:%d", i), i, 0)
+	}
+
+	var wg sync.WaitGroup
+	var totalProcessed int64
+	var mu sync.Mutex
+
+	// Обычно SCAN используется последовательно, но если нужно ускорить,
+	// можно запустить несколько горутин, каждая со своим курсором.
+	// Однако это требует координации, чтобы не обрабатывать одни и те же ключи дважды.
+	// Для простоты покажем обработку с разделением по диапазонам (например, по хешу ключа),
+	// но здесь используем одну горутину для SCAN (потому что SCAN сам итерирует).
+	// Вместо этого демонстрируем обработку каждой пачки в отдельной горутине.
+
+	worker := func(keys []string, wg *sync.WaitGroup) {
+		defer wg.Done()
+		for _, key := range keys {
+			// Симуляция обработки
+			mu.Lock()
+			totalProcessed++
+			fmt.Println(key)
+			mu.Unlock()
+		}
+	}
+
+	var cursor uint64
+	for {
+		keys, nextCursor, err := rdb.Scan(ctx, cursor, "concurrent:*", 50).Result()
+		if err != nil {
+			logger.Printf("SCAN ошибка: %v", err)
+			break
+		}
+		if len(keys) > 0 {
+			wg.Add(1)
+			go worker(keys, &wg)
+		}
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+	wg.Wait()
+	fmt.Printf("Обработано %d ключей\n", totalProcessed)
+
+	// Очистка
+	keys, _ := rdb.Keys(ctx, "concurrent:*").Result()
+	rdb.Del(ctx, keys...)
+}
 
 // 8. SCAN С ТАЙМАУТОМ (ИСПОЛЬЗОВАНИЕ КОНТЕКСТА)
-func primer8() {}
+func primer8() {
+	fmt.Println("\n--- 8. SCAN с таймаутом через контекст ---")
+
+	for i := 0; i < 500; i++ {
+		rdb.Set(ctx, fmt.Sprintf("timeout:%d", i), i, 0)
+	}
+
+	ctxTimeout, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+
+	var count int
+	iter := rdb.Scan(ctxTimeout, 0, "timeout:*", 100).Iterator()
+	for iter.Next(ctxTimeout) {
+		count++
+		// Имитация медленной обработки (чтобы вызвать таймаут)
+		if count%10 == 0 {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if err := iter.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Println("Таймаут итерации: превышено время ожидания")
+		} else {
+			logger.Printf("Ошибка: %v", err)
+		}
+	}
+	fmt.Printf("Обработано %d ключей до таймаута\n", count)
+
+	// Очистка
+	keys, _ := rdb.Keys(ctx, "timeout:*").Result()
+	rdb.Del(ctx, keys...)
+}
