@@ -476,16 +476,139 @@ func primer3() {
 }
 
 // 4. УДАЛЕНИЕ ИГРОКА И ОГРАНИЧЕНИЕ РАЗМЕРА
-func primer4() {}
+func primer4() {
+	key := "lb:4"
+	rdb.Del(ctx, key)
+
+	for i := 1; i <= 10; i++ {
+		rdb.ZAdd(ctx, key, redis.Z{Score: float64(i * 10), Member: fmt.Sprintf("P%d", i)})
+	}
+	// Удаляем игрока P5
+	rdb.ZRem(ctx, key, "P5")
+	// Оставляем только топ-5 (удаляем ранги 5 и выше)
+	rdb.ZRemRangeByRank(ctx, key, 5, -1)
+
+	res, _ := rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:   key,
+		Start: 0,
+		Stop:  -1,
+		Rev:   true,
+	}).Result()
+	fmt.Println("Оставшиеся игроки (топ-5):")
+	for i := 0; i < len(res); i += 2 {
+		fmt.Printf("  %s: %s\n", res[i], res[i+1])
+	}
+	rdb.Del(ctx, key)
+	fmt.Println()
+}
 
 // 5. ПОЛУЧЕНИЕ ОКРУЖЕНИЯ ИГРОКА (СОСЕДИ ПО РАНГУ)
-func primer5() {}
+func primer5() {
+	key := "lb:5"
+	rdb.Del(ctx, key)
+
+	for i := 1; i <= 20; i++ {
+		rdb.ZAdd(ctx, key, redis.Z{Score: float64(i * 10), Member: fmt.Sprintf("P%d", i)})
+	}
+	player := "P10"
+	rank, _ := rdb.ZRevRank(ctx, key, player).Result()
+	radius := int64(3)
+	start := rank - radius
+	if start < 0 {
+		start = 0
+	}
+	stop := rank + radius
+
+	res, _ := rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:   key,
+		Start: start,
+		Stop:  stop,
+		Rev:   true,
+	}).Result()
+	fmt.Printf("Соседи %s (радиус 3):\n", player)
+	for i := 0; i < len(res); i += 2 {
+		marker := ""
+		if res[i] == player {
+			marker = " ←"
+		}
+		fmt.Printf("  %s: %s%s\n", res[i], res[i+1], marker)
+	}
+	rdb.Del(ctx, key)
+	fmt.Println()
+}
 
 // 6. СЕЗОННЫЙ ЛИДЕРБОРД (ЕЖЕДНЕВНЫЙ С TTL)
-func primer6() {}
+func primer6() {
+	today := time.Now().Format("2006-01-02")
+	key := fmt.Sprintf("lb:daily:%s", today)
+	rdb.Del(ctx, key)
+
+	rdb.ZAdd(ctx, key, redis.Z{Score: 100, Member: "Mina"})
+	rdb.ZAdd(ctx, key, redis.Z{Score: 300, Member: "Kolya"})
+	rdb.Expire(ctx, key, 24*time.Hour)
+
+	ttl, _ := rdb.TTL(ctx, key).Result()
+	fmt.Printf("Ключ %s, TTL: %v\n", key, ttl)
+	rdb.Del(ctx, key)
+	fmt.Println()
+}
 
 // 7. ОБЪЕДИНЕНИЕ НЕСКОЛЬКИХ ЛИДЕРБОРДОВ (ZUNIONSTORE)
-func primer7() {}
+func primer7() {
+	k1, k2, dest := "lb:7a", "lb:7b", "lb:7dest"
+	rdb.Del(ctx, k1, k2, dest)
+
+	// День 1
+	rdb.ZAdd(ctx, k1, redis.Z{Score: 100, Member: "A"}, redis.Z{Score: 80, Member: "B"})
+	// День 2
+	rdb.ZAdd(ctx, k2, redis.Z{Score: 90, Member: "A"}, redis.Z{Score: 110, Member: "C"})
+
+	// Объединяем с суммированием
+	rdb.ZUnionStore(ctx, dest, &redis.ZStore{
+		Keys:      []string{k1, k2},
+		Weights:   []float64{1, 1},
+		Aggregate: "SUM",
+	})
+
+	res, _ := rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:   dest,
+		Start: 0,
+		Stop:  -1,
+		Rev:   true,
+	}).Result()
+	fmt.Println("Объединённый лидерборд:")
+	for i := 0; i < len(res); i += 2 {
+		fmt.Printf("  %s: %s\n", res[i], res[i+1])
+	}
+
+	rdb.Del(ctx, k1, k2, dest)
+	fmt.Println()
+}
 
 // 8. КОМПОЗИТНЫЙ СКОР (МУЛЬТИМЕТРИКИ)
-func primer8() {}
+func primer8() {
+	key := "lb:8"
+	rdb.Del(ctx, key)
+
+	// Составной скор: wins * 1 000 000 + kills
+	mult := int64(1_000_000)
+	rdb.ZAdd(ctx, key, redis.Z{Score: float64(10*mult + 50), Member: "Alice"})
+	rdb.ZAdd(ctx, key, redis.Z{Score: float64(10*mult + 30), Member: "Bob"})
+	rdb.ZAdd(ctx, key, redis.Z{Score: float64(8*mult + 100), Member: "Charlie"})
+
+	res, _ := rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:   key,
+		Start: 0,
+		Stop:  -1,
+		Rev:   true,
+	}).Result()
+	fmt.Println("Рейтинг (сначала победы, потом убийства):")
+	for i := 0; i < len(res); i += 2 {
+		score, _ := strconv.ParseInt(res[i+1], 10, 64)
+		wins := score / mult
+		kills := score % mult
+		fmt.Printf("  %s: победы %d, убийства %d\n", res[i], wins, kills)
+	}
+	rdb.Del(ctx, key)
+	fmt.Println()
+}
