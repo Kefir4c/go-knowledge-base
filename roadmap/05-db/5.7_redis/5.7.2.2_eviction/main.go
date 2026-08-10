@@ -374,7 +374,7 @@ func primer3() {
 	setConfig("maxmemory-policy", "volatile-ttl")
 
 	// Создаём ключи с разным TTL (от 1 до 60 сек)
-	for i := 0; i < 600; i++ {
+	for i := 0; i < 60; i++ {
 		key := fmt.Sprintf("token:%d", i)
 		val := make([]byte, 1024)
 		rand.Read(val)

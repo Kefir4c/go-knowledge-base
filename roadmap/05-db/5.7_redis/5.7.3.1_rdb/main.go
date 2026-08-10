@@ -392,18 +392,18 @@ func primer7() {
 	rdbPath := fmt.Sprintf("%s/%s", dir["dir"], filename["dbfilename"])
 
 	if _, err := os.Stat(rdbPath); err == nil {
-		data, err := os.ReadFile(rdbPath) // вместо ioutil.ReadFile
+		data, err := os.ReadFile(rdbPath)
 		if err != nil {
 			fmt.Printf("Ошибка чтения: %v\n", err)
 			return
 		}
 		backupName := fmt.Sprintf("dump_%s.rdb", time.Now().Format("2006-01-02_15-04-05"))
-		err = os.WriteFile(backupName, data, 0644) // вместо ioutil.WriteFile
+		err = os.WriteFile(backupName, data, 0644)
 		if err != nil {
 			fmt.Printf("Ошибка записи backup: %v\n", err)
 			return
 		}
-		fmt.Printf("✅ Бэкап создан: %s (размер: %d байт)\n", backupName, len(data))
+		fmt.Printf("Бэкап создан: %s (размер: %d байт)\n", backupName, len(data))
 		cleanupOldBackups()
 	} else {
 		fmt.Println("RDB-файл не найден")
@@ -413,7 +413,7 @@ func primer7() {
 
 // cleanupOldBackups
 func cleanupOldBackups() {
-	files, err := os.ReadDir(".") // вместо ioutil.ReadDir
+	files, err := os.ReadDir(".")
 	if err != nil {
 		return
 	}
