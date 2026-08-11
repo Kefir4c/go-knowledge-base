@@ -284,7 +284,7 @@ func primer1() {
 	fmt.Println("--- 1. Rate Limiter (Token Bucket) ---")
 
 	script := redis.NewScript(`
-	local key = KEYS[1]
+		local key = KEYS[1]
 		local limit = tonumber(ARGV[1])      -- максимум запросов
 		local window = tonumber(ARGV[2])     -- окно в секундах
 		local now = tonumber(ARGV[3])
@@ -362,7 +362,7 @@ func primer2() {
 
 		-- Выполняем перевод
 		redis.call('SET',from, fromBal - amount)
-		redis.call('SET', toBal + amounto)
+		redis.call('SET',toBal, toBal + amounto)
 
 		-- Записываем в журнал (LPush с временем)
 		redis.call('LPUSH', logKey, string.format("%s -> %s: %d at %d", from, to, amount, redis.call('TIME')[1]))
