@@ -482,11 +482,11 @@ func (l *LeakyBucketLimiter) Allow(ctx context.Context) (bool, error) {
 		local capacity = tonumber(ARGV[1])
 		local member = ARGV[2]
 		local len = redis.call("LLEN",queue)
-		if len >= capacity thne
+		if len >= capacity then
 			return 0
 		end
 		redis.call("RPUSH", queue, number)
-		retrn 1	
+			return 1	
 	`)
 	member := fmt.Sprintf("%d", time.Now().UnixNano())
 	ok, err := script.Run(ctx, l.client, []string{l.queueKey}, l.capacity, member).Int()
