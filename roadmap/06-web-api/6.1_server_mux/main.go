@@ -1,9 +1,13 @@
-package servermux
+package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -134,26 +138,414 @@ import (
      r.PathValue.
 */
 
-//ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ЗАПУСКА И ОСТАНОВКИ
+//ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 
-// startServer — запускает HTTP сервер на указанном порту с заданным хендлером.
-// Выводит сообщение и ждёт Enter для остановки с graceful shutdown.
-func startServer(port int, handler http.Handler, label string) {
-	addr := fmt.Sprintf(":%d", port)
-	srv := http.Server{
-		Addr:         addr,
-		Handler:      handler,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+func runServer(port int, handler http.Handler, name string) {
+	srv := &http.Server{
+		Addr:    fmt.Sprintf(":%d", port),
+		Handler: handler,
+	}
+	fmt.Printf("\n--- %s ---\n", name)
+	fmt.Printf("Запущен на http://localhost:%d\n", port)
+	fmt.Println("Нажмите Ctrl+C для остановки")
+	fmt.Println("")
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
+}
+
+//  ПРИМЕР 1: УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК (ЛЮБОЙ МЕТОД)
+/*
+ЗАЧЕМ: Показывает, как использовать паттерн без метода для создания
+       универсального обработчика, который сам разбирает метод.
+       Полезно для логирования, метрик, fallback-обработчиков.
+
+ФИШКА: Паттерн "/api" без метода обрабатывает ЛЮБОЙ метод.
+       Идеально для точек входа, где нужно логировать все запросы.
+*/
+func primer1() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/api", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Поймали запрос: %s %s", r.Method, r.URL.Path)
+		fmt.Fprintf(w, "Метод: %s, Путь: %s", r.Method, r.URL.Path)
+	})
+
+	mux.HandleFunc("GET /api/users", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Специальный: GET /api/users")
+	})
+
+	runServer(8001, mux, "Пример 1: Универсальный обработчик")
+}
+
+//  ПРИМЕР 2: ДИНАМИЧЕСКОЕ ВКЛЮЧЕНИЕ/ОТКЛЮЧЕНИЕ РОУТОВ
+/*
+ЗАЧЕМ: Показывает, как можно динамически включать/отключать эндпоинты
+       без перезапуска сервера. Например, для feature-флагов или
+       временного отключения проблемных ручек.
+
+ФИШКА: Используем замыкание и переменную-флаг в обработчике.
+       Параметр {action} позволяет управлять состоянием через API.
+*/
+func primer2() {
+	mux := http.NewServeMux()
+
+	featureEnabled := true
+
+	mux.HandleFunc("POST /admin/feature/{action}", func(w http.ResponseWriter, r *http.Request) {
+		action := r.PathValue("action")
+		switch action {
+		case "enable":
+			featureEnabled = true
+			fmt.Println(w, "Фича включена")
+		case "disable":
+			featureEnabled = false
+			fmt.Println(w, "Фича отключена")
+		default:
+			http.Error(w, "Неизвестное действие", http.StatusBadRequest)
+		}
+	})
+
+	mux.HandleFunc("GET /api/new-feature", func(w http.ResponseWriter, r *http.Request) {
+		if !featureEnabled {
+			http.Error(w, "Фича временно отключена", http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Println(w, "Менчик, фича работает")
+	})
+	runServer(8002, mux, "Пример 2: Динамическое отключение роутов")
+}
+
+//  ПРИМЕР 3: ВЛОЖЕННЫЕ ПАРАМЕТРЫ
+/*
+ЗАЧЕМ: Показывает, как работать с параметрами на разных уровнях вложенности.
+       Реальный кейс: /api/v1/users/123/orders/456
+
+ФИШКА: Два параметра в одном паттерне — userId и orderId.
+       Можно извлекать оба через r.PathValue.
+*/
+func primer3() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /api/users/{usersId}/orders/{ordersId}", func(w http.ResponseWriter, r *http.Request) {
+		userId := r.FormValue("userId")
+		orderId := r.FormValue("ordersId")
+		uID, _ := strconv.Atoi(userId)
+		oID, _ := strconv.Atoi(orderId)
+		fmt.Sprintf("Пользователь: %d, Заказ: %d", uID, oID)
+	})
+
+	mux.HandleFunc("DELETE /api/users/{userId}/orders/{orderId}", func(w http.ResponseWriter, r *http.Request) {
+		userID := r.PathValue("userId")
+		orderID := r.PathValue("orderId")
+		fmt.Sprintf("Удалён заказ %s пользователя %s", orderID, userID)
+	})
+	runServer(8003, mux, "Пример 3: Вложенные параметры")
+}
+
+//  ПРИМЕР 4: ОБОГАЩЕНИЕ КОНТЕКСТА ЧЕРЕЗ MIDDLEWARE
+/*
+ЗАЧЕМ: Показывает, как middleware может обогащать контекст запроса,
+       передавая данные дальше по цепочке. Реальный кейс: аутентификация,
+       извлечение пользователя из JWT, логирование с request ID.
+
+ФИШКА: Контекст передаётся через r.Context(), а хендлеры получают
+       обогащённые данные через кастомные функции-геттеры.
+*/
+type contextKey string
+
+const (
+	userIDKey    contextKey = "userID"
+	requestIDKey contextKey = "requestID"
+)
+
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := r.Header.Get("X-Request-Id")
+		if reqID == "" {
+			reqID = fmt.Sprintf("%d", time.Now().UnixNano())
+		}
+		ctx := context.WithValue(r.Context(), requestIDKey, reqID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func userIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		idStr := r.PathValue("id")
+		if idStr != "" {
+			ctx := context.WithValue(r.Context(), userIDKey, idStr)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		} else {
+			next.ServeHTTP(w, r)
+		}
+	})
+}
+
+func getUserID(ctx context.Context) string {
+	if v := ctx.Value(userIDKey); v != nil {
+		return v.(string)
+	}
+	return "unknown"
+}
+
+func getRequestID(ctx context.Context) string {
+	if v := ctx.Value(requestIDKey); v != nil {
+		return v.(string)
+	}
+	return "no-request-id"
+}
+
+func primer4() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		userID := getUserID(ctx)
+		reqID := getUserID(ctx)
+		fmt.Fprintf(w, "UserID: %s\nRequestID: %s", userID, reqID)
+	})
+	handler := requestIDMiddleware(userIDMiddleware(mux))
+	runServer(8004, handler, "Пример 4: Обогащение контекста")
+}
+
+//  ПРИМЕР 5: ГРУППИРОВКА МАРШРУТОВ С ПРЕФИКСАМИ
+/*
+ЗАЧЕМ: Показывает мощную технику структурирования больших API.
+       Каждый модуль (users, products, admin) имеет свой роутер,
+       а корневой роутер их монтирует.
+
+ФИШКА: Используем http.StripPrefix для автоматической обрезки префикса.
+       Теперь внутри модуля пути пишутся без префикса.
+*/
+func primer5() {
+	root := http.NewServeMux()
+
+	usersMux := http.NewServeMux()
+	usersMux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Список пользователей")
+	})
+	usersMux.HandleFunc("GET /{id}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Пользователь: %s", r.PathValue("id"))
+	})
+	usersMux.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Создан пользователь")
+	})
+	root.Handle("/api/users/", http.StripPrefix("/api/users", usersMux))
+
+	productsMux := http.NewServeMux()
+	productsMux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Список продуктов")
+	})
+	productsMux.HandleFunc("GET /{id}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Продукт: %s", r.PathValue("id"))
+	})
+	root.Handle("/api/products/", http.StripPrefix("/api/products", productsMux))
+
+	adminMux := http.NewServeMux()
+	adminMux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Статистика: 1000 пользователей, 500 заказов")
+	})
+	root.Handle("/admin/", http.StripPrefix("/admin", adminMux))
+
+	root.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Главная страница\nДоступно:\n/api/users\n/api/products\n/admin")
+	})
+	runServer(8005, root, "Пример 5: Группировка маршрутов")
+}
+
+//  ПРИМЕР 6: PATH + QUERY ПАРАМЕТРЫ
+/*
+ЗАЧЕМ: Показывает комбинирование path-параметров и query-параметров.
+       Реальный кейс: /api/orders?status=pending&limit=10
+
+ФИШКА: Path-параметры через r.PathValue, query-параметры через r.URL.Query()
+       Работают идеально вместе.
+*/
+func primer6() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /api/orders/{id}", func(w http.ResponseWriter, r *http.Request) {
+		orderID := r.FormValue("id")
+		status := r.URL.Query().Get("status")
+		limit := r.URL.Query().Get("limit")
+		fmt.Fprintf(w, "Заказ: %s\n", orderID)
+		if status == "" {
+			fmt.Fprintf(w, "   Статус: %s\n", status)
+		}
+		if limit != "" {
+			fmt.Fprintf(w, "   Лимит: %s\n", limit)
+		}
+	})
+
+	mux.HandleFunc("GET /api/orders", func(w http.ResponseWriter, r *http.Request) {
+		status := r.URL.Query().Get("status")
+		limit := r.URL.Query().Get("limit")
+		fmt.Fprintf(w, "Список заказов\n")
+		if status != "" {
+			fmt.Fprintf(w, "   Фильтр по статусу: %s\n", status)
+		}
+		if limit != "" {
+			fmt.Fprintf(w, "   Лимит: %s\n", limit)
+		}
+	})
+	runServer(8006, mux, "Пример 6: Path + Query параметры")
+}
+
+//  ПРИМЕР 7: JSON С ВАЛИДАЦИЕЙ
+/*
+ЗАЧЕМ: Показывает, как элегантно обрабатывать JSON с валидацией.
+       Используем отдельную структуру для запроса и проверяем поля.
+
+ФИШКА: Валидация вынесена в отдельную функцию, хендлеры становятся чистыми.
+       Ошибки валидации возвращаются в понятном формате.
+*/
+type CreateUserRequest struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Age   int    `json:"age"`
+}
+
+func (c *CreateUserRequest) Validate() map[string]string {
+	errors := make(map[string]string)
+	if c.Name == "" {
+		errors["name"] = "обязательное поле"
+	}
+	if c.Email == "" || !strings.Contains(c.Email, "@") {
+		errors["email"] = "должен быть корректный email"
+	}
+	if c.Age < 18 || c.Age > 100 {
+		errors["age"] = "должен быть от 18 до 100"
+	}
+	return errors
+}
+
+func primer7() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+		var req CreateUserRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Неверный JSON", http.StatusBadRequest)
+			return
+		}
+		if errors := req.Validate(); len(errors) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":  "Ошибка валидации",
+				"fields": errors,
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Пользователь создан",
+			"user":    req,
+		})
+	})
+	runServer(8007, mux, "Пример 7: JSON с валидацией")
+}
+
+//  ПРИМЕР 8: ДИНАМИЧЕСКАЯ ЗАДЕРЖКА
+/*
+ЗАЧЕМ: Показывает, как эмулировать разную скорость ответа для разных эндпоинтов.
+       Полезно для тестирования timeout-ов, retry-логики.
+
+ФИШКА: Параметр {delay} задаёт задержку в секундах.
+       Показывает, как можно влиять на поведение через path-параметры.
+*/
+func primer8() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /api/delay/{seconds}", func(w http.ResponseWriter, r *http.Request) {
+		secSter := r.PathValue("seconds")
+		sec, err := strconv.Atoi(secSter)
+		if err != nil || sec < 0 || sec > 30 {
+			http.Error(w, "Задержка должна быть от 0 до 30 секунд", http.StatusBadRequest)
+			return
+		}
+		if sec > 0 {
+			time.Sleep(time.Duration(sec) * time.Second)
+		}
+		fmt.Fprintf(w, "Ответ через %d секунд", sec)
+	})
+	runServer(8008, mux, "Пример 8: Динамическая задержка")
+}
+
+//  ПРИМЕР 9: A/B ТЕСТИРОВАНИЕ ЧЕРЕЗ ЗАГОЛОВКИ
+/*
+ЗАЧЕМ: Показывает, как реализовать A/B тестирование на уровне роутинга.
+       Разные пользователи видят разные версии API.
+
+ФИШКА: Middleware проверяет заголовок X-Experiment и направляет
+       на разные хендлеры. Всё прозрачно для клиента.
+*/
+func primer9() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /api/v1/feature", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "ВЕРСИЯ A: Старый интерфейс")
+	})
+
+	mux.HandleFunc("GET /api/v2/feature", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "ВЕРСИЯ B: Новый интерфейс с улучшениями")
+	})
+
+	abMux := http.NewServeMux()
+	abMux.HandleFunc("GET /feature", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Experiment") == "B" {
+			http.Redirect(w, r, "/api/v2/feature", http.StatusTemporaryRedirect)
+		} else {
+			http.Redirect(w, r, "/api/v1/feature", http.StatusTemporaryRedirect)
+		}
+	})
+	mux.Handle("/api/", http.StripPrefix("/api", abMux))
+
+	runServer(8009, mux, "Пример 9: A/B Тестирование")
+}
+
+//  ПРИМЕР 10: ФАБРИКА ОБРАБОТЧИКОВ (ЗАМЫКАНИЕ)
+/*
+ЗАЧЕМ: Показывает, как можно генерировать обработчики на лету.
+       Полезно для создания фабрик обработчиков.
+
+ФИШКА: Функция makeHandler возвращает разные обработчики в зависимости
+       от переданного параметра. Паттерн один, поведение разное.
+*/
+func primer10() {
+	mux := http.NewServeMux()
+
+	makeHandler := func(resource string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			id := r.PathValue("id")
+			fmt.Fprintf(w, "%s (ID: %s)", resource, id)
+		}
 	}
 
-	fmt.Printf("%s запущен на http://localhost%s\n", label, addr)
-	fmt.Println("Нажмите Enter для остановки")
+	mux.HandleFunc("GET /users/{id}", makeHandler("Пользователь"))
+	mux.HandleFunc("GET /orders/{id}", makeHandler("Заказ"))
+	mux.HandleFunc("GET /products/{id}", makeHandler("Продукт"))
 
-	go func() {
-		if err := http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Ошибка сервера: %v", err)
-		}
-	}()
+	mux.HandleFunc("GET /api/{version}/users/{id}", func(w http.ResponseWriter, r *http.Request) {
+		version := r.PathValue("version")
+		id := r.PathValue("id")
+		fmt.Fprintf(w, "API v%s: Пользователь %s", version, id)
+	})
+
+	runServer(8010, mux, "Пример 10: Фабрика обработчиков")
+}
+func main() {
+	fmt.Println("HTTP.SERVEMUX — 10 ПРИМЕРОВ")
+	primer1()
+	primer2()
+	primer3()
+	primer4()
+	primer5()
+	primer6()
+	primer7()
+	primer8()
+	primer9()
+	primer10()
 }
