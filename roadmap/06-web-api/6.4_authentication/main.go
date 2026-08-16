@@ -1,16 +1,24 @@
-package main
+package authentication
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"log"
+	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+	"uuid"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -441,7 +449,7 @@ func primer2() {
 */
 
 // Пример middleware, который проверяет токен и кладёт userID в контекст.
-func AuthMiddleware(secret string, next http.HandlerFunc) http.HandlerFunc {
+func AuthMiddlewares(secret string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHandler := r.Header.Get("Authorization")
 		if authHandler == "" {
@@ -490,7 +498,7 @@ func primer3() {
 	mux := http.NewServeMux()
 
 	// Защищённый эндпоинт
-	mux.HandleFunc("GET /protected", AuthMiddleware(secret, protectedHandler))
+	mux.HandleFunc("GET /protected", AuthMiddlewares(secret, protectedHandler))
 
 	// Также добавим эндпоинт для генерации токена (для теста)
 	mux.HandleFunc("GET /generate", func(w http.ResponseWriter, r *http.Request) {
@@ -515,6 +523,446 @@ func primer3() {
 	}()
 	fmt.Scanln()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+}
+
+//ПРИМЕР 4: OAuth2 имитация
+
+/*
+  В реальном проекте вы бы делали HTTP-запросы к Google:
+    - GET /auth/login -> редирект на https://accounts.google.com/o/oauth2/v2/auth
+    - После подтверждения пользователь возвращается на /auth/callback с code
+    - POST /oauth/token для обмена кода на токены
+    - GET /oauth/userinfo для получения данных
+
+  Здесь мы имитируем все шаги локально, чтобы показать логику.
+*/
+
+// OAuth2Config — настройки провайдера (имитация Google)
+type OAuth2Config struct {
+	ClientID     string
+	ClientSecret string
+	RedirectURL  string
+	AuthURL      string // локальный эндпоинт для "подтверждения"
+	TokenURL     string // локальный эндпоинт для обмена кода
+	UserInfoURL  string // локальный эндпоинт для получения данных
+}
+
+// OAuth2State — хранилище состояний (для защиты от CSRF)
+var oauthStates = struct {
+	sync.RWMutex
+	data map[string]string // state -> redirect_uri (или userID)
+}{data: make(map[string]string)}
+
+// generateState генерирует случайную строку для state
+func generateState() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// OAuth2Handlers — обработчики для OAuth2 потока
+type OAuth2Handlers struct {
+	config    *OAuth2Config
+	userStore *InMemoryUserRepo // используем из примера 4 (или свою реализацию)
+	svc       *AuthService      // используем сервис из примера 4 для выдачи токенов
+}
+
+func NewOAuth2Handlers(cfg *OAuth2Config, userStore *InMemoryUserRepo, svc *AuthService) *OAuth2Handlers {
+	return &OAuth2Handlers{config: cfg, userStore: userStore, svc: svc}
+}
+
+// Login — перенаправляет на страницу авторизации провайдера (имитация)
+func (h *OAuth2Handlers) Login(w http.ResponseWriter, r *http.Request) {
+	// Генерируем state и сохраняем
+	state := generateState()
+	oauthStates.Lock()
+	oauthStates.data[state] = "default" // можно сохранить redirect_uri
+	oauthStates.Unlock()
+
+	// Строим URL авторизации (в реальности это внешний URL)
+	// Здесь мы просто перенаправляем на локальный эндпоинт "авторизации"
+	authURL := fmt.Sprintf("%s?client_id=%s&redirect_uri=%s&response_type=code&state=%s&scope=email profile",
+		h.config.AuthURL, h.config.ClientID, h.config.RedirectURL, state)
+
+	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// Authorize — имитация страницы авторизации провайдера (пользователь подтверждает доступ)
+func (h *OAuth2Handlers) Authorize(w http.ResponseWriter, r *http.Request) {
+	// Получаем параметры
+	redirectURI := r.URL.Query().Get("redirect_uri")
+	state := r.URL.Query().Get("state")
+	// В реальном проекте здесь бы была страница входа и подтверждения
+	// Мы просто имитируем, что пользователь нажал "Разрешить"
+
+	// Проверяем state (защита от CSRF)
+	oauthStates.RLock()
+	_, ok := oauthStates.data[state]
+	oauthStates.RUnlock()
+	if !ok {
+		http.Error(w, "Invalid state", http.StatusBadRequest)
+		return
+	}
+	// Удаляем state после использования
+	oauthStates.Lock()
+	delete(oauthStates.data, state)
+	oauthStates.Unlock()
+
+	// Генерируем код авторизации (произвольная строка)
+	code := base64.URLEncoding.EncodeToString([]byte(uuid.New().String()))
+
+	// Перенаправляем обратно с кодом
+	redirectURL := fmt.Sprintf("%s?code=%s&state=%s", redirectURI, code, state)
+	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// Callback — обработка кода, обмен на токены
+func (h *OAuth2Handlers) Callback(w http.ResponseWriter, r *http.Request) {
+	code := r.URL.Query().Get("code")
+	state := r.URL.Query().Get("state")
+	if code == "" || state == "" {
+		http.Error(w, "Missing code or state", http.StatusBadRequest)
+		return
+	}
+	// Проверяем state (если не удалён ранее)
+	oauthStates.RLock()
+	_, ok := oauthStates.data[state]
+	oauthStates.RUnlock()
+	if !ok {
+		// state может быть уже удалён, но если мы его удалили в Authorize,
+		// то здесь он уже не существует; для демонстрации пропустим проверку
+	}
+	// В реальности здесь нужно отправить POST запрос к /token с code, client_id, client_secret
+	// и получить access_token, refresh_token, id_token.
+
+	// Имитируем получение токенов
+	// Для простоты создадим пользователя в нашей системе (по email)
+	// Предположим, что провайдер вернул email пользователя.
+	// В реальности мы бы получили его из ID Token или UserInfo Endpoint.
+	email := "oauth_user@example.com" // В реальности из ответа провайдера
+
+	// Проверяем, существует ли пользователь; если нет — создаём
+	user, ok := h.userStore.GetUserByEmail(email)
+	if !ok {
+		// Регистрируем пользователя с временным паролем (не используется)
+		hashed, _ := bcrypt.GenerateFromPassword([]byte("oauth_tmp"), bcrypt.DefaultCost)
+		user, _ = h.userStore.CreateUser(email, string(hashed))
+	}
+
+	// Генерируем свои access/refresh токены (как в примере 4)
+	access, _ := h.svc.GenerateAccessToken(user.ID)
+	refresh, _ := h.svc.GenerateRefreshToken(user.ID)
+
+	// Возвращаем токены в JSON (или можно установить cookie)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"access_token":  access,
+		"refresh_token": refresh,
+		"token_type":    "Bearer",
+		"id_token":      "имитация ID Token", // обычно это JWT с данными пользователя
+	})
+}
+
+// UserInfo — имитация эндпоинта получения информации о пользователе (для OIDC)
+func (h *OAuth2Handlers) UserInfo(w http.ResponseWriter, r *http.Request) {
+	// В реальности проверяем access_token и возвращаем данные
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"sub":   "12345",
+		"email": "oauth_user@example.com",
+		"name":  "OAuth User",
+	})
+}
+
+// Запуск примера 5
+func primer4() {
+	fmt.Println("\n=== ПРИМЕР 5: OAuth2 / OpenID Connect (имитация) ===")
+
+	// Настройки (как бы от Google)
+	cfg := &OAuth2Config{
+		ClientID:     "your-client-id",
+		ClientSecret: "your-client-secret",
+		RedirectURL:  "http://localhost:8091/auth/callback",
+		AuthURL:      "http://localhost:8091/oauth/authorize", // локальная имитация
+		TokenURL:     "http://localhost:8091/oauth/token",     // не используется в этой демо
+		UserInfoURL:  "http://localhost:8091/oauth/userinfo",
+	}
+
+	// Хранилища и сервис (из примера 4)
+	userRepo := NewInMemoryUserRepo()
+	cfgSvc := &Config{
+		AccessSecret:       "oauth-access-secret",
+		RefreshSecret:      "oauth-refresh-secret",
+		AccessTokenExpiry:  15 * time.Minute,
+		RefreshTokenExpiry: 7 * 24 * time.Hour,
+		BcryptCost:         12,
+	}
+	refreshRepo := NewInMemoryRefreshRepo()
+	svc := NewAuthService(cfgSvc, userRepo, refreshRepo)
+	handlers := NewOAuth2Handlers(cfg, userRepo, svc)
+
+	mux := http.NewServeMux()
+	// Эндпоинты OAuth2
+	mux.HandleFunc("GET /auth/login", handlers.Login)
+	mux.HandleFunc("GET /oauth/authorize", handlers.Authorize) // имитация страницы провайдера
+	mux.HandleFunc("GET /auth/callback", handlers.Callback)
+	mux.HandleFunc("GET /oauth/userinfo", handlers.UserInfo)
+
+	// Защищённый эндпоинт (для демонстрации)
+	mux.HandleFunc("GET /protected", AuthMiddleware(svc, func(w http.ResponseWriter, r *http.Request) {
+		uid, _ := r.Context().Value("userID").(int)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "Protected via OAuth2 login",
+			"user_id": uid,
+		})
+	}))
+
+	addr := ":8091"
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	fmt.Printf("OAuth2 сервер запущен на http://localhost%s\n", addr)
+	fmt.Println("Эндпоинты:")
+	fmt.Println("  GET /auth/login          - начало входа через Google (имитация)")
+	fmt.Println("  GET /oauth/authorize     - страница подтверждения (локальная)")
+	fmt.Println("  GET /auth/callback       - обработка кода (редирект)")
+	fmt.Println("  GET /protected           - защищённый ресурс (токен из примера 4)")
+	fmt.Println("Нажмите Enter для остановки")
+
+	go srv.ListenAndServe()
+	fmt.Scanln()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+}
+
+// ПРИМЕР 6: ДВУХФАКТОРНАЯ АУТЕНТИФИКАЦИЯ (TOTP)
+
+/*
+  ПРИМЕР 6: TOTP (Google Authenticator)
+  Что показывает:
+    - Как генерировать секрет для пользователя.
+    - Как создавать QR-код для сканирования в приложении.
+    - Как проверять одноразовые коды.
+    - Как интегрировать TOTP в процесс логина (после успешного ввода пароля).
+
+  Почему это важно:
+    Двухфакторная аутентификация — стандарт безопасности для серьёзных приложений.
+    На собеседовании могут спросить, как реализовать 2FA.
+
+  Фишки:
+    - Используем библиотеку github.com/pquerna/otp/totp для генерации и проверки.
+    - Храним секрет в БД (в примере — в памяти).
+    - Генерируем QR-код в виде data URL (base64 PNG) для отображения в браузере.
+    - Добавляем эндпоинт /setup-totp для активации и /verify-totp для проверки.
+    - После проверки выдаём токены (как в примере 4).
+*/
+
+// UserTOTPSecret хранит TOTP секрет для пользователя
+type UserTOTPSecret struct {
+	Secret  string
+	Enabled bool
+}
+
+var totpSecrets = struct {
+	sync.RWMutex
+	data map[int]UserTOTPSecret
+}{data: make(map[int]UserTOTPSecret)}
+
+// TOTPHandlers — обработчики для TOTP
+type TOTPHandlers struct {
+	userRepo *InMemoryUserRepo
+	svc      *AuthService
+}
+
+func NewTOTPHandlers(userRepo *InMemoryUserRepo, svc *AuthService) *TOTPHandlers {
+	return &TOTPHandlers{userRepo: userRepo, svc: svc}
+}
+
+// SetupTOTP — генерирует секрет и возвращает QR-код (для активации)
+func (h *TOTPHandlers) SetupTOTP(w http.ResponseWriter, r *http.Request) {
+	// Предполагаем, что пользователь уже аутентифицирован (по access токену)
+	uid, ok := r.Context().Value("userID").(int)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Генерируем секрет для пользователя
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      "MyApp",
+		AccountName: fmt.Sprintf("user-%d", uid),
+	})
+	if err != nil {
+		http.Error(w, "Failed to generate TOTP secret", http.StatusInternalServerError)
+		return
+	}
+
+	// Сохраняем секрет
+	totpSecrets.Lock()
+	totpSecrets.data[uid] = UserTOTPSecret{Secret: key.Secret(), Enabled: false}
+	totpSecrets.Unlock()
+
+	// Генерируем QR-код в виде PNG
+	img, err := key.Image(200, 200)
+	if err != nil {
+		http.Error(w, "Failed to generate QR code", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		http.Error(w, "Failed to encode QR code", http.StatusInternalServerError)
+		return
+	}
+	qrBase64 := base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"secret": key.Secret(),
+		"qr":     "data:image/png;base64," + qrBase64,
+	})
+}
+
+// VerifyTOTP — проверяет код и активирует TOTP для пользователя
+func (h *TOTPHandlers) VerifyTOTP(w http.ResponseWriter, r *http.Request) {
+	uid, ok := r.Context().Value("userID").(int)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Code == "" {
+		http.Error(w, "Missing code", http.StatusBadRequest)
+		return
+	}
+
+	totpSecrets.RLock()
+	secretData, exists := totpSecrets.data[uid]
+	totpSecrets.RUnlock()
+	if !exists {
+		http.Error(w, "TOTP not set up for user", http.StatusBadRequest)
+		return
+	}
+
+	// Проверяем код
+	if !totp.Validate(req.Code, secretData.Secret) {
+		http.Error(w, "Invalid TOTP code", http.StatusUnauthorized)
+		return
+	}
+
+	// Активируем TOTP для пользователя
+	totpSecrets.Lock()
+	secretData.Enabled = true
+	totpSecrets.data[uid] = secretData
+	totpSecrets.Unlock()
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "TOTP enabled successfully"})
+}
+
+// LoginWithTOTP — логин, требующий TOTP (после проверки пароля)
+// В реальности вы бы вызывали этот эндпоинт после успешного ввода пароля,
+// либо включали проверку TOTP в основной логин.
+func (h *TOTPHandlers) LoginWitnTOTP(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Code     string `json:"code"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	user, ok := h.userRepo.GetUserByEmail(req.Email)
+	if !ok {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	// Проверяем TOTP, если включён
+	totpSecrets.RLock()
+	secretDate, exists := totpSecrets.data[user.ID]
+	totpSecrets.RUnlock()
+	if exists && secretDate.Enabled {
+		if !totp.Validate(req.Code, secretDate.Secret) {
+			http.Error(w, "Invalid TOTP code", http.StatusUnauthorized)
+			return
+		} else {
+			http.Error(w, "TOTP not enabled for this user", http.StatusBadRequest)
+			return
+		}
+
+		// Выдаём токены
+		access, _ := h.svc.GenerateAccessToken(user.ID)
+		refresh, _ := h.svc.GenerateRefreshToken(user.ID)
+		w.Header().Set("Conected-Tepe", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"access_token":  access,
+			"refresh_token": refresh,
+			"token_type":    "Bearer",
+		})
+	}
+}
+
+// Запуск примера 5
+func primer5() {
+	fmt.Println("\n=== ПРИМЕР 6: TOTP (двухфакторная аутентификация) ===")
+
+	userRepo := NewInMemoryUserRepo()
+	cfgSvc := &Config{
+		AccessSecret:       "totp-access-secret",
+		RefreshSecret:      "totp-refresh-secret",
+		AccessTokenExpiry:  15 * time.Minute,
+		RefreshTokenExpiry: 7 * 24 * time.Hour,
+		BcryptCost:         12,
+	}
+	refreshRepo := NewInMemoryRefreshRepo()
+	svc := NewAuthService(cfgSvc, userRepo, refreshRepo)
+	handlers := NewTOTPHandlers(userRepo, svc)
+
+	// Создаём тестового пользователя (для удобства)
+	hashed, _ := bcrypt.GenerateFromPassword([]byte("password123"), bcrypt.DefaultCost)
+	userRepo.CreateUser("test@example.com", string(hashed))
+
+	mux := http.NewServeMux()
+	// Эндпоинты для TOTP (требуют аутентификации)
+	mux.HandleFunc("POST /setup-totp", AuthMiddleware(svc, handlers.SetupTOTP))
+	mux.HandleFunc("POST /verify-totp", AuthMiddleware(svc, handlers.VerifyTOTP))
+
+	// Также добавим эндпоинт для получения токена (для теста setup)
+	mux.HandleFunc("GET /generate-token", func(w http.ResponseWriter, r *http.Request) {
+		// Просто выдаём токен для тестового пользователя, чтобы можно было вызвать /setup-totp
+		user, _ := userRepo.GetUserByEmail("test@example.com")
+		access, _ := svc.GenerateAccessToken(user.ID)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"token": access})
+	})
+
+	addr := ":8092"
+	srv := &http.Server{Addr: addr, Handler: mux}
+
+	fmt.Printf("TOTP сервер запущен на http://localhost%s\n", addr)
+	fmt.Println("Эндпоинты:")
+	fmt.Println("  GET /generate-token     - получить access токен для тестового пользователя")
+	fmt.Println("  POST /setup-totp        - сгенерировать секрет и QR (требует Bearer токен)")
+	fmt.Println("  POST /verify-totp       - проверить код и активировать TOTP (требует Bearer)")
+	fmt.Println("  POST /login-totp        - логин с паролем и TOTP кодом (публичный)")
+	fmt.Println("Нажмите Enter для остановки")
+
+	go srv.ListenAndServe()
+	fmt.Scanln()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
