@@ -1,0 +1,425 @@
+syntax = "proto3";
+
+package proto.v1;
+
+option go_package ="github.com/Kefir4c/go-knowledge-base\roadmap\06-web-api\6.6_gRPC\1.2_proto;protov1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/descriptor.proto";
+
+// ПРИМЕР 1: БАЗОВОЕ СООБЩЕНИЕ (скалярные типы, enum, нумерация полей)
+message User {
+  string id = 1;           // 1 байт (частое поле)
+  string email = 2;        // 1 байт
+  string name = 3;         // 1 байт
+  int32 age = 4;           // 1 байт
+  bool is_active = 5;      // 1 байт
+  float rating = 6;        // 1 байт
+  UserStatus status = 7;   // 1 байт
+  repeated string tags = 8; // 1 байт (слайс)
+}
+
+enum UserStatus {
+  USER_STATS_UNSPECIFIED = 0;
+  USER_STATS_ACTIVE = 1;
+  USER_STATS_INACTIVE = 2;
+  USER_STATS_SUSPENDED = 3;
+}
+
+// ПРИМЕР 2: ВЛОЖЕННЫЕ СООБЩЕНИЯ, ONEOF, MAP, REPEATED
+message Order {
+  string id = 1;
+  string user_id = 2;
+  repeated OrderItem items = 3; // слайс структур
+  map <string, string> metadata = 4;
+  oneof payment {
+    CardPayment card = 5;
+    CashPayment cash = 6;
+  }
+  Address shipping_address = 7; // вложенное сообщение
+  OrderStatus order_status = 8;
+}
+
+message OrderItem {
+  string product_id = 1;
+  int32 quantity = 2;
+  double price = 3;
+}
+
+message CardPayment {
+  string card_number = 1;
+  string expiry = 2;
+  string cvv = 3;
+}
+
+message CashPayment {
+  string currency = 1;
+  double amount = 2;
+}
+
+message Address {
+  string street = 1;
+  string city = 2;
+  string country = 3;
+  string zip_code = 4;
+}
+
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;
+  ORDER_STATUS_PENDING = 1;
+  ORDER_STATUS_PAID = 2;
+  ORDER_STATUS_SHIPPED = 3;
+  ORDER_STATUS_DELIVERED = 4;
+}
+
+// ПРИМЕР 3: WELL-KNOWN TYPES, RESERVED, OPTIONAL
+message Event {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Timestamp occurred_at = 3;    // момент времени
+  google.protobuf.Duration processing_time = 4; // интервал
+  optional string trace_id = 5;                 // необязательное поле
+  google.protobuf.Any payload = 6;              // любое сообщение
+
+  reserved 7, 8;                    // зарезервированные номера
+  reserved "old_field";             // зарезервированное имя
+}
+
+service EventService {
+  rpc LogEvent (Event) returns (google.protobuf.Empty) {}
+}
+
+// ПРИМЕР 4: СЕРВИС С UNARY И STREAMING RPC, ОПЦИИ (DEPRECATED, JSON_NAME)
+message GetUserRequest {
+  string user_id = 1 [json_name = "userId"];  // кастомное имя в JSON
+}
+
+message ListUsersRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  string next_page_token = 2;
+}
+
+message UpdateUserRequest {
+  User user = 1;
+  google.protobuf.FieldMask update_mask = 2;  // частичное обновление
+}
+
+message UserWithDeprecated {
+  string id = 1;
+  string email = 2;
+  string name = 3 [deprecated = true];  // устаревшее поле
+}
+
+message CreateUserRequest {
+  string email = 1;
+  string name = 2;
+}
+
+message ChatMessage {
+  string text = 1;
+  string user_id = 2;
+}
+
+service UserService {
+  // Unary RPC
+  rpc GetUser (GetUserRequest) returns (User) {}
+
+  // Server-Streaming RPC
+  rpc ListUsers (ListUsersRequest) returns (stream User) {}
+
+  // Client-Streaming RPC
+  rpc CreateUsers (stream CreateUserRequest) returns (google.protobuf.Empty) {}
+
+  // Bidirectional Streaming RPC
+  rpc Chat (stream ChatMessage) returns (stream ChatMessage) {}
+
+  // Частичное обновление с FieldMask
+  rpc UpdateUser (UpdateUserRequest) returns (User) {}
+}
+
+// ПРИМЕР 5: IMPORTS И PACKAGE (common.proto вынесен отдельно)
+// Здесь показано, как использовать типы из common.proto
+
+// ВНИМАНИЕ: Этот пример требует отдельный файл common/common.proto
+// Здесь приведена только демонстрация импорта.
+
+// common/common.proto
+
+  message Pagination {
+    int32 page = 1;
+    int32 page_size = 2;
+    int32 total = 3;
+  }
+
+  message Sort {
+    string field = 1;
+    bool ascending = 2;
+  }
+
+  message Filter {
+    string field = 1;
+    string operator = 2;
+    string value = 3;
+  }
+
+  // Использование в другом файле:
+  import "common/common.proto";
+
+  message ListProductsRequest {
+    common.Pagination pagination = 1;
+    repeated common.Sort sorts = 2;
+    repeated common.Filter filters = 3;
+  }
+
+// ПРИМЕР 6: CUSTOM OPTIONS (РАСШИРЕНИЕ PROTOBUF)
+extend google.protobuf.FieldOptions{
+    string validation_rules = 50000;
+    bool sensitive = 50001;
+}
+
+extend google.protobuf.MessageOptions{
+    string api_version = 50002;
+}
+
+extend google.protobuf.ServiceOptions {
+  string service_owner = 50003;
+}
+
+message UserWithValidation {
+    option (api_version) = "v1";
+
+    string id = 1 [(validation_rules) = "required,uuid"];
+    string email = 2 [(validation_rules) = "required,email"];
+    string password = 3 [(sensitive) = true];
+}
+service SecureUserService {
+    option (service_owner) = "team_auth";
+    rpc GetSecureUser (GetUserRequest) returns (UserWithValidation) {}
+}
+
+// ПРИМЕР 7: GOOGLE.PROTOBUF.STRUCT (ДИНАМИЧЕСКИЕ ДАННЫЕ)
+message AppConfig {
+  string id = 1;
+  string name = 2;
+  google.protobuf.Struct settings = 3;   // динамический JSON-объект
+  google.protobuf.ListValue tags = 4;    // динамический JSON-массив
+  google.protobuf.Value feature_flags = 5; // любой тип (string, bool, number, object)
+}
+
+// ПРИМЕР 8: NESTED ENUM + СЛОЖНЫЙ ONEOF С STRUCT
+message APIResponse {
+  string request_id = 1;
+  Status status = 2;
+  oneof payload {
+    SuccessData success = 3;
+    ErrorData error = 4;
+  }
+  map<string, string> metadata = 5;
+
+  message Status {
+    int32 code = 1;
+    string message = 2;
+    StatusEnum status = 3;
+
+    enum StatusEnum {
+      STATUS_UNSPECIFIED = 0;
+      STATUS_SUCCESS = 1;
+      STATUS_ERROR = 2;
+      STATUS_WARNING = 3;
+    }
+  }
+
+  message SuccessData {
+    google.protobuf.Any data = 1;
+    google.protobuf.Struct extra = 2;
+  }
+
+  message ErrorData {
+    string error_id = 1;
+    string message = 2;
+    repeated ErrorDetail details = 3;
+
+    message ErrorDetail {
+      string field = 1;
+      string reason = 2;
+    }
+  }
+}
+
+// ПРИМЕР 9: ПАГИНАЦИЯ, ФИЛЬТРЫ, СОРТИРОВКА (ПОЛНЫЙ CRUD-СЕРВИС)
+
+// ---------- ПРОДУКТ ----------
+
+message Product {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  double price = 4;
+  int32 stock = 5;
+  ProductStatus status = 6;
+  repeated string categories = 7;
+  map<string, string> attributes = 8;
+  google.protobuf.Timestamp created_at = 9;
+  google.protobuf.Timestamp updated_at = 10;
+  int32 version = 11;
+
+  enum ProductStatus {
+    PRODUCT_STATUS_UNSPECIFIED = 0;
+    PRODUCT_STATUS_DRAFT = 1;
+    PRODUCT_STATUS_PUBLISHED = 2;
+    PRODUCT_STATUS_ARCHIVED = 3;
+    PRODUCT_STATUS_OUT_OF_STOCK = 4;
+  }
+}
+
+message CreateProductRequest {
+  string name = 1;
+  string description = 2;
+  double price = 3;
+  int32 stock = 4;
+  repeated string categories = 5;
+  map<string, string> attributes = 6;
+}
+
+message CreateProductResponse {
+  Product product = 1;
+}
+
+message GetProductRequest {
+  oneof identifier {
+    string id = 1;
+    string name = 2;
+  }
+}
+
+message GetProductResponse {
+  Product product = 1;
+}
+
+message ListProductsRequests {
+  // Пагинация
+  int32 page_size = 1;
+  string page_token = 2;
+
+  // Фильтры
+  string name_contains = 3;
+  double min_price = 4;
+  double max_price = 5;
+  Product.ProductStatus status = 6;
+  repeated string categories = 7;
+
+  // Сортировка
+  string sort_by = 8;
+  bool ascending = 9;
+}
+
+message ListProductsResponse {
+  repeated Product products = 1;
+  string next_page_token = 2;
+  int32 total_count = 3;
+}
+
+message UpdateProductRequest {
+  Product product = 1;
+  google.protobuf.FieldMask update_mask = 2;
+}
+
+message UpdateProductResponse {
+  Product product = 1;
+}
+
+message DeleteProductRequest {
+  string id = 1;
+}
+
+message BulkUpdateStockRequest {
+  repeated StockUpdate updates = 1;
+
+  message StockUpdate {
+    string product_id = 1;
+    int32 quantity = 2;
+    Operation operation = 3;
+
+    enum Operation {
+      OPERATION_UNSPECIFIED = 0;
+      OPERATION_SET = 1;
+      OPERATION_ADD = 2;
+      OPERATION_SUBTRACT = 3;
+    }
+  }
+}
+
+message BulkUpdateStockResponse {
+  int32 success_count = 1;
+  int32 failed_count = 2;
+  repeated FailedUpdate failures = 3;
+
+  message FailedUpdate {
+    string product_id = 1;
+    string reason = 2;
+  }
+}
+
+message ImportProductsResponse {
+  int32 imported_count = 1;
+  int32 failed_count = 2;
+}
+
+message WatchProductRequest {
+  string product_id = 1;
+  WatchAction action = 2;
+
+  enum WatchAction {
+    WATCH_ACTION_UNSPECIFIED = 0;
+    WATCH_ACTION_SUBSCRIBE = 1;
+    WATCH_ACTION_UNSUBSCRIBE = 2;
+  }
+}
+
+message WatchProductResponse {
+  string product_id = 1;
+  Product product = 2;
+  EventType event_type = 3;
+  google.protobuf.Timestamp event_time = 4;
+
+  enum EventType {
+    EVENT_TYPE_UNSPECIFIED = 0;
+    EVENT_TYPE_CREATED = 1;
+    EVENT_TYPE_UPDATED = 2;
+    EVENT_TYPE_DELETED = 3;
+    EVENT_TYPE_STOCK_CHANGED = 4;
+  }
+}
+
+// ---------- ПОЛНЫЙ CRUD-СЕРВИС ----------
+
+service ProductService {
+  // Базовые CRUD-методы
+  rpc CreateProduct (CreateProductRequest) returns (CreateProductResponse) {}
+  rpc GetProduct (GetProductRequest) returns (GetProductResponse) {}
+  rpc ListProducts (ListProductsRequests) returns (ListProductsResponse) {}
+  rpc UpdateProduct (UpdateProductRequest) returns (UpdateProductResponse) {}
+  rpc DeleteProduct (DeleteProductRequest) returns (google.protobuf.Empty) {}
+
+  // Server-Streaming — экспорт всех продуктов
+  rpc ExportAllProducts (google.protobuf.Empty) returns (stream Product) {}
+
+  // Client-Streaming — импорт
+  rpc ImportProducts (stream CreateProductRequest) returns (ImportProductsResponse) {}
+
+  // Bidirectional — мониторинг изменений
+  rpc WatchProducts (stream WatchProductRequest) returns (stream WatchProductResponse) {}
+
+  // Bulk-операции
+  rpc BulkUpdateStock (BulkUpdateStockRequest) returns (BulkUpdateStockResponse) {}
+}

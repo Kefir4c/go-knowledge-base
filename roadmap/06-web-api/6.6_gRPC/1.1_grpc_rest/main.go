@@ -1,4 +1,4 @@
-package grpc
+package main
 
 /*
   РАЗДЕЛ 1.1: Что такое gRPC и зачем он нужен
