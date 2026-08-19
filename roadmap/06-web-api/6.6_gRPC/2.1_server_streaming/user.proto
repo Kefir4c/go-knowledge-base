@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package ="github.com/Kefir4c/go-knowledge-base\roadmap\06-web-api\6.6_gRPC\1.2_proto;protov1";
+
+import "google/protobuf/timestamp.proto"
+import "google/protobuf/empty.proto"
+
+message User {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+message ListUsersRequest {
+  int32 limit = 1;
+}
+
+message SubscribeUpdatesRequest {
+  string user_id = 1;
+}
+
+message UserUpdate {
+  string user_id = 1;
+  string event = 2;
+  google.protobuf.Timestamp event_time = 3;
+}
+
+service UserService {
+// Server-Streaming: список пользователей
+rpc ListUsers (ListUsersRequest) returns (stream User) {}
+
+// Server-Streaming: подписка на события
+rpc SubscriveUpdates (SubscribeUpdatesRequest) returns (stream UserUpdate) {}
+}

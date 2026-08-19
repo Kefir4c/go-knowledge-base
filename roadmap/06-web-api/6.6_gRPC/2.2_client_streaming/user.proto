@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package ="github.com/Kefir4c/go-knowledge-base\roadmap\06-web-api\6.6_gRPC\1.2_proto;protov1";
+
+import "google/protobuf/timestamp.proto";
+
+// Первое сообщение — метаданные файла
+message FileMetadata {
+  string filename = 1;
+  string content_type = 2;      // например: "image/png", "video/mp4"
+  int64 size = 3;              // размер в байтах
+  string user_id = 4;
+}
+
+// Запрос на загрузку: либо метаданные, либо чанк
+message UploadFileRequest {
+  oneof data {
+    FileMetadata metadata = 1;  // первый запрос — всегда метаданные
+    bytes chunk = 2;            // последующие — чанки по 64KB
+  }
+}
+
+// Ответ после загрузки
+message UploadFileResponse {
+  string file_id = 1;
+  string message = 2;
+  google.protobuf.Timestamp uploaded_at = 3;
+}
+
+// Запрос на скачивание
+message DownloadFileRequest {
+  string file_id = 1;
+}
+
+// Ответ на скачивание: либо информация, либо чанк
+message DownloadFileResponse {
+  oneof data {
+    FileInfo info = 1;
+    bytes chunk = 2;
+  }
+}
+
+message FileInfo {
+  string filename = 1;
+  string content_type = 2;
+  int64 size = 3;
+}
+
+service FileService {
+  // Client-Streaming: загрузка файла
+  rpc UploadFile (stream UploadFileRequest) returns (UploadFileResponse) {}
+
+  // Server-Streaming: скачивание файла
+  rpc DownloadFile (DownloadFileRequest) returns (stream DownloadFileResponse) {}
+}

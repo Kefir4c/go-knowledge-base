@@ -1,5 +1,23 @@
 package __1_server_streaming
 
+import (
+	"context"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	pb "github.com/"
+)
+
 /*
   РАЗДЕЛ 2.1: SERVER-STREAMING RPC
 
@@ -402,3 +420,172 @@ package __1_server_streaming
   9.  Использовать для: большие списки, подписки, загрузка файлов.
   10. В отличие от Unary, не возвращает всю пачку, а по одному.
 */
+
+//ХРАНИЛИЩЕ
+
+type UserStore struct {
+	mu    sync.RWMutex
+	users map[string]*pb.User
+}
+
+func NewUserStore() *UserStore {
+	return &UserStore{
+		users: map[string]*pb.User{
+			"1": {Id: "1", Name: "Alice", Email: "alice@ex.com", CreatedAt: timestamppb.Now()},
+			"2": {Id: "2", Name: "Bob", Email: "bob@ex.com", CreatedAt: timestamppb.Now()},
+			"3": {Id: "3", Name: "Charlie", Email: "charlie@ex.com", CreatedAt: timestamppb.Now()},
+			"4": {Id: "4", Name: "Diana", Email: "diana@ex.com", CreatedAt: timestamppb.Now()},
+			"5": {Id: "5", Name: "Eve", Email: "eve@ex.com", CreatedAt: timestamppb.Now()},
+		},
+	}
+}
+
+func (s *UserStore) ListAll() []*pb.User {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	users := make([]*pb.User, 0, len(s.users))
+	for _, u := range s.users {
+		users = append(users, u)
+	}
+	return users
+}
+
+func (s *UserStore) Get(id string) (*pb.User, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	u, ok := s.users[id]
+	return u, ok
+}
+
+//СЕРВЕР
+
+type UserServer struct {
+	pb.UnimplementedUserServiceServer
+	store *UserStore
+}
+
+// ListUsers — server-streaming: отдаём пользователей по одному
+func (s *UserServer) ListUsers(req *pb.ListUsersRequest, stream pb.UserService_ListUsersServer) error {
+	ctx := stream.Context()
+
+	// Проверяем, не истёк ли дедлайн
+	if ctx.Err() == context.DeadlineExceeded {
+		return status.Error(codes.DeadlineExceeded, "deadline exceeded")
+	}
+
+	users := s.store.ListAll()
+	limit := int(req.Limit)
+	if limit <= 0 || limit > len(users) {
+		limit = len(users)
+	}
+
+	for i := 0; i < limit; i++ {
+		// Проверяем, не отменил ли клиент запрос
+		select {
+		case <-ctx.Done():
+			return status.Error(codes.Canceled, "client cancelled")
+		default:
+			// Отправляем сообщение
+			if err := stream.Send(users[i]); err != nil {
+				return err
+			}
+			// Имитация задержки (чтобы показать поток)
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+	return nil
+}
+
+// SubscribeToUpdates — имитация подписки на события
+func (s *UserServer) SubscribeToUpdates(req *pb.SubscribeToUpdatesRequest, stream pb.UserService_SubscribeToUpdatesServer) error {
+	ctx := stream.Context()
+	if ctx.Err() == context.DeadlineExceeded {
+		return status.Error(codes.DeadlineExceeded, "deadline exceeded")
+	}
+
+	// Проверяем, есть ли такой пользователь (если указан user_id)
+	if req.UserId != "" {
+		if _, ok := s.store.Get(req.UserId); !ok {
+			return status.Error(codes.NotFound, "user not found")
+		}
+	}
+
+	// Имитация отправки обновлений (раз в 2 секунды)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	// Имитация счётчика обновлений
+	var counter int
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Клиент отключился, закрываем стрим")
+			return nil // или status.Error(codes.Canceled, "client cancelled")
+		case <-ticker.C:
+			counter++
+			update := &pb.UserUpdate{
+				User: &pb.User{
+					Id:        "999",
+					Name:      "Update #" + string(rune(counter+48)),
+					Email:     "update@ex.com",
+					CreatedAt: timestamppb.Now(),
+				},
+				Type:       pb.UserUpdate_UPDATE_TYPE_CREATED,
+				OccurredAt: timestamppb.Now(),
+			}
+			if err := stream.Send(update); err != nil {
+				log.Printf("Ошибка отправки: %v", err)
+				return err
+			}
+			log.Printf("Отправлено обновление #%d", counter)
+			if counter >= 5 { // имитация 5 обновлений, потом завершаем стрим
+				log.Println("Завершаем стрим по достижении лимита")
+				return nil
+			}
+		}
+	}
+}
+
+//INTERCEPTOR ДЛЯ СТРИМОВ (ЛОГИРОВАНИЕ)
+
+// StreamLoggingInterceptor логирует начало и конец стрима
+func StreamLoggingInterceptor(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	log.Printf("[STREAM] Начало: %s", info.FullMethod)
+	err := handler(srv, ss)
+	log.Printf("[STREAM] Конец: %s, ошибка: %v", info.FullMethod, err)
+	return err
+}
+
+func main() {
+	store := NewUserStore()
+	server := &UserServer{store: store}
+
+	// Создаём gRPC-сервер с интерсептором для стримов
+	s := grpc.NewServer(
+		grpc.StreamInterceptor(StreamLoggingInterceptor),
+	)
+
+	pb.RegisterUserServiceServer(s, server)
+
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	go func() {
+		log.Println("Сервер запущен на :50051")
+		if err := s.Serve(lis); err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	// Graceful shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	log.Println("Остановка сервера...")
+	s.GracefulStop()
+	log.Println("Сервер остановлен")
+}
