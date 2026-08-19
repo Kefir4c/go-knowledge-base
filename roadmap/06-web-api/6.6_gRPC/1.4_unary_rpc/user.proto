@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package ="github.com/Kefir4c/go-knowledge-base\roadmap\06-web-api\6.6_gRPC\1.2_proto;protov1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/field_mask.proto";
+
+// Пользователь
+message User {
+  string id = 1;
+  string email = 2;
+  string name = 3;
+  int32 age = 4;
+  bool is_active = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp update_at = 7;
+}
+
+// --- GetUser ---
+message GetUserRequest {
+  string id = 1;
+}
+
+// --- CreateUser ---
+message CreateUserRequest {
+  string email = 1;
+  string name = 2;
+  int32 age = 3;
+}
+
+message CreateUserResponse {
+  User user = 1;
+}
+
+// --- UpdateUser ---
+message UpdateUserRequest {
+  User user = 1;
+  google.protobuf.FieldMask update_mask = 2;  // частичное обновление
+}
+
+message UpdateUserResponse {
+  User user = 1;
+}
+
+// Сервис
+service UserService {
+  rpc GetUser (GetUserRequest) returns (User) {}
+  rpc CreateUser (CreateUserRequest) returns (CreateUserResponse) {}
+  rpc UpdateUser (UpdateUserRequest) returns (UpdateUserResponse) {}
+}
