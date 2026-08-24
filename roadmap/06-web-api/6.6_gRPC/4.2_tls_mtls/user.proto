@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package ="github.com/Kefir4c/go-knowledge-base\roadmap\06-web-api\6.6_gRPC\3.2_user;protov1";
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message User {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+}
+
+service UserService {
+  rpc GetUser (GetUserRequest) returns (User) {}
+}

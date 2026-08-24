@@ -1,5 +1,26 @@
 package __2_tls_mtls
 
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
+
+	pb "github.com/"
+)
+
 /*
   РАЗДЕЛ 4.2: TLS/mTLS
   TLS (Transport Layer Security) и его разновидность mTLS (Mutual TLS) —
@@ -461,3 +482,206 @@ package __2_tls_mtls
   │ с интерсепторами?   │ авторизация (что можно).                            │
   └─────────────────────┴─────────────────────────────────────────────────────┘
 */
+
+//ХРАНИЛИЩЕ
+
+type UserStore struct {
+	mu    sync.RWMutex
+	users map[string]*pb.User
+}
+
+func NewUserStore() *UserStore {
+	return &UserStore{
+		users: map[string]*pb.User{
+			"1": {Id: "1", Name: "Alice", Email: "alice@ex.com"},
+			"2": {Id: "2", Name: "Bob", Email: "bob@ex.com"},
+			"3": {Id: "3", Name: "Charlie", Email: "charlie@ex.com"},
+		},
+	}
+}
+
+func (s *UserStore) Get(id string) (*pb.User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	user, ok := s.users[id]
+	if !ok {
+		return nil, fmt.Errorf("user not found")
+	}
+	return user, nil
+}
+
+//СЕРВЕР
+
+type UserServer struct {
+	pb.UnimplementedUserServiceServer
+	store *UserStore
+}
+
+// GetUser — unary RPC
+func (s *UserServer) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.User, error) {
+	if req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+
+	// Извлекаем информацию о клиенте из контекста (добавлена интерсептором)
+	clientCN, ok := ctx.Value("clientCN").(string)
+	if ok && clientCN != "" {
+		log.Printf("Клиент %s запросил пользователя %s", clientCN, req.UserId)
+	}
+
+	user, err := s.store.Get(req.UserId)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	return user, nil
+}
+
+// INTERCEPTOR ДЛЯ mTLS (АВТОРИЗАЦИЯ)
+func AuthInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		// 1. Извлекаем информацию о пире (клиенте)
+		peerInfo, ok := peer.FromContext(ctx)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "no peer info")
+		}
+
+		// 2. Проверяем, что это TLS-соединение
+		tlsInfo, ok := peerInfo.AuthInfo.(credentials.TLSInfo)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "not a TLS connection")
+		}
+
+		// 3. Извлекаем клиентский сертификат
+		if len(tlsInfo.State.PeerCertificates) == 0 {
+			return nil, status.Error(codes.Unauthenticated, "no client certificate")
+		}
+		cert := tlsInfo.State.PeerCertificates[0]
+
+		// 4. Извлекаем CommonName из сертификата
+		clientCN := cert.Subject.CommonName
+		if clientCN == "" {
+			return nil, status.Error(codes.Unauthenticated, "no CommonName in certificate")
+		}
+
+		// 5. Проверяем права доступа (для примера — только клиентам с CN=client-1)
+		if clientCN != "client-1" {
+			return nil, status.Error(codes.PermissionDenied, "access denied")
+		}
+
+		// 6. Добавляем CN в контекст для бизнес-логики
+		ctx = context.WithValue(ctx, "clientCN", clientCN)
+
+		log.Printf("Клиент %s аутентифицирован через mTLS", clientCN)
+
+		// 7. Вызываем следующий обработчик
+		return handler(ctx, req)
+	}
+}
+
+// ФУНКЦИИ ЗАГРУЗКИ КРЕДЕНШЕЛОВ
+// loadTLSCredentials — загружает серверный сертификат для обычного TLS
+func loadTLSCredentials() (credentials.TransportCredentials, error) {
+	serverCert, err := tls.LoadX509KeyPair(
+		"certs/server_cert.pem",
+		"certs/server_key.pem",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		MinVersion:   tls.VersionTLS13,
+	}
+	return credentials.NewTLS(tlsConfig), nil
+}
+
+// loadMTLSCredentials — загружает серверный сертификат + CA для проверки клиентов
+func loadMTLSCredentials() (credentials.TransportCredentials, error) {
+	// 1. Загружаем серверный сертификат и ключ
+	serverCert, err := tls.LoadX509KeyPair(
+		"certs/server_cert.pem",
+		"certs/server_key.pem",
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Загружаем CA-сертификат для проверки клиентов
+	caCert, err := os.ReadFile("certs/ca_cert/pem")
+	if err != nil {
+		return nil, err
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("failed to append CA certificate")
+	}
+
+	// 3. Создаём TLS-конфиг с mTLS
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientCAs:    caCertPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+	return credentials.NewTLS(tlsConfig), nil
+}
+
+func main() {
+	// Парсим флаги для выбора режима TLS/mTLS
+	// По умолчанию — mTLS
+	mode := os.Getenv("TLS_MODE")
+	if mode == "" {
+		mode = "mtls"
+	}
+
+	var opts []grpc.ServerOption
+
+	if mode == "mtls" {
+		log.Println("Запуск сервера в режиме mTLS (взаимная аутентификация)")
+		creds, err := loadMTLSCredentials()
+		if err != nil {
+			log.Fatalf("Failed to load mTLS credentials: %v", err)
+		}
+		opts = append(opts, grpc.Creds(creds))
+		opts = append(opts, grpc.UnaryInterceptor(AuthInterceptor()))
+	} else {
+		log.Println("Запуск сервера в режиме TLS (односторонняя аутентификация)")
+		creds, err := loadTLSCredentials()
+		if err != nil {
+			log.Fatalf("Failed to load TLS credentials: %v", err)
+		}
+		opts = append(opts, grpc.Creds(creds))
+	}
+
+	// Создаём gRPC-сервер
+	s := grpc.NewServer(opts...)
+
+	// Регистрируем сервис
+	store := NewUserStore()
+	pb.RegisterUserServiceServer(s, &UserServer{store: store})
+
+	// Запускаем слушатель
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("🚀 Сервер запущен на :50051")
+
+	go func() {
+		if err := s.Serve(lis); err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	// Graceful shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	log.Println("⏳ Остановка сервера...")
+	s.GracefulStop()
+	log.Println("✅ Сервер остановлен")
+}

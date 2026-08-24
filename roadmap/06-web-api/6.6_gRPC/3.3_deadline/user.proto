@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package ="github.com/Kefir4c/go-knowledge-base\roadmap\06-web-api\6.6_gRPC\3.3_user;protov1";
+
+import "google/protobuf/timestamp.proto";
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message CreateUserRequest {
+  string email = 1;
+  string name = 2;
+  int32 age = 3;
+}
+
+message User {
+  string id = 1;
+  string email = 2;
+  string name = 3;
+  int32 age = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+message CreateUserResponse {
+  User user = 1;
+}
+
+// Детали ошибки для валидации
+message ErrorDetails {
+  string field = 1;
+  string reason = 2;
+  string value = 3;
+}
+
+service UserService {
+  rpc GetUser (GetUserRequest) returns (User) {}
+  rpc CreateUser (CreateUserRequest) returns (CreateUserResponse) {}
+}
