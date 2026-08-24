@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package ="github.com/Kefir4c/go-knowledge-base\roadmap\06-web-api\6.6_gRPC\3.1_use;protov1";
+
+import "google/protobuf/timestamp.proto";
+
+message GetUserRequest {
+  string user_id = 1;
+}
+
+message User {
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  google.protobuf.Timestamp created_at = 4;
+}
+
+service UserService {
+  rpc GetUser (GetUserRequest) returns (User) {}
+}

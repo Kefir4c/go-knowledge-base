@@ -1,5 +1,32 @@
 package __1_metadata
 
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	// Замени путь на свой
+	pb "github.com/example/metadata-example/proto/user"
+)
+
 /*
   РАЗДЕЛ 3.1: METADATA (ЗАГОЛОВКИ)
   Metadata — это механизм передачи произвольной key-value информации
@@ -454,3 +481,231 @@ package __1_metadata
   13. При пропагации через цепочку сервисов копируй metadata из входящего контекста.
   14. Размер metadata должен быть небольшим (до 4-8KB).
 */
+
+// В продакшене секреты — из переменных окружения
+const jwtSecret = "my-prod-secret-key"
+
+//ХРАНИЛИЩЕ
+
+type UserStore struct {
+	mu    sync.RWMutex
+	users map[string]*pb.User
+}
+
+func NewUserStore() *UserStore {
+	return &UserStore{
+		users: map[string]*pb.User{
+			"1": {Id: "1", Name: "Alice", Email: "alice@ex.com", CreatedAt: timestamppb.Now()},
+			"2": {Id: "2", Name: "Bob", Email: "bob@ex.com", CreatedAt: timestamppb.Now()},
+			"3": {Id: "3", Name: "Charlie", Email: "charlie@ex.com", CreatedAt: timestamppb.Now()},
+		},
+	}
+}
+
+func (s *UserStore) Get(id string) (*pb.User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	user, ok := s.users[id]
+	if !ok {
+		return nil, errors.New("user not found")
+	}
+	return user, nil
+}
+
+//JWT-ФУНКЦИИ
+// В реальном проекте используй библиотеку "github.com/golang-jwt/jwt/v5"
+// Здесь мы имитируем JWT для демонстрации.
+
+// JWTClaims — структура утверждений
+type JWTClaims struct {
+	UserID string
+	Exp    int64
+}
+
+// generateJWT — создаёт JWT-токен (имитация)
+func generateJWT(userID string) (string, error) {
+	// В реальности — подпись с секретом
+	payload := fmt.Sprintf(`{"user_id":"%s","exp":%d}`, userID, time.Now().Add(time.Hour).Unix())
+
+	token := base64.StdEncoding.EncodeToString([]byte(payload))
+	return token, nil
+}
+
+// validateJWT — проверяет JWT-токен и возвращает userID
+func validateJWT(token string) (string, error) {
+	if token == "" {
+		return "", errors.New("empty token")
+	}
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		return "", errors.New("invalid token format")
+	}
+	// Парсим user_id из JSON-подобной строки (упрощённо)
+	parts := strings.Split(string(decoded), ",")
+	for _, p := range parts {
+		if strings.Contains(p, "user_id") {
+			userID := strings.TrimPrefix(strings.TrimSpace(p), `"user_id":"`)
+			userID = strings.TrimSuffix(userID, `"`)
+			if userID != "" {
+				return userID, nil
+			}
+		}
+	}
+	return "", errors.New("invalid token claims")
+}
+
+//СЕРВЕР
+
+type UserServer struct {
+	pb.UnimplementedUserServiceServer
+	store *UserStore
+}
+
+// GetUser — unary RPC с использованием metadata
+func (s *UserServer) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.User, error) {
+	// Проверяем дедлайн
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, status.Error(codes.DeadlineExceeded, "deadline exceeded")
+	}
+
+	// 1. ИЗВЛЕКАЕМ USERID ИЗ КОНТЕКСТА (добавлен интерсептором)
+	userID, ok := ctx.Value("userID").(string)
+	if !ok || userID == "" {
+		return nil, status.Error(codes.Unauthenticated, "user not authenticated")
+	}
+	log.Printf("Аутентифицирован пользователь: %s", userID)
+
+	// 2. ВАЛИДАЦИЯ ВХОДНЫХ ДАННЫХ
+	if req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+
+	// 3. ПОЛУЧАЕМ ДАННЫЕ
+	user, err := s.store.Get(req.UserId)
+	if err != nil {
+		if err.Error() == "user not found" {
+			return nil, status.Error(codes.NotFound, "user not found")
+		}
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	// 4. ОТПРАВЛЯЕМ HEADERS (в начале ответа)
+	header := metadata.Pairs(
+		"x-server-version", "1.2.3",
+		"x-request-id", generateRequestID())
+	if err := grpc.SetHeader(ctx, header); err != nil {
+		log.Printf("Ошибка отправки headers: %v", err)
+	}
+
+	// 5. ОТПРАВЛЯЕМ TRAILERS
+	defer func() {
+		trailer := metadata.Pairs(
+			"x-processing-time", fmt.Sprintf("%d", time.Since(time.Now()).Milliseconds()),
+			"x-user-role", "user")
+		if err := grpc.SetTrailer(ctx, trailer); err != nil {
+			log.Printf("Ошибка отправки trailers: %v", err)
+		}
+	}()
+	log.Printf("Пользователь %s запросил данные о %s", userID, req.UserId)
+	return user, nil
+}
+
+// generateRequestID — генерирует уникальный ID для трейсинга
+func generateRequestID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// INTERCEPTORS
+func AuthInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		// 1. ИЗВЛЕКАЕМ METADATA
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "metadata not found")
+		}
+
+		// 2. ЛОГИРУЕМ ВСЕ METADATA (для отладки)
+		log.Printf("Входящие metadata: %+v", md)
+
+		// 3. ПРОВЕРЯЕМ AUTHORIZATION
+		auth := md.Get("authorization")
+		if len(auth) == 0 {
+			return nil, status.Error(codes.Unauthenticated, "authorization header missing")
+		}
+
+		// 4. ПАРСИМ "Bearer <token>"
+		parts := strings.SplitN(auth[0], " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			return nil, status.Error(codes.Unauthenticated, "invalid authorization format (expected Bearer <token>)")
+		}
+		token := parts[1]
+
+		// 5. ВАЛИДИРУЕМ JWT
+		userID, err := validateJWT(token)
+		if err != nil {
+			log.Printf("Ошибка валидации JWT: %v", err)
+			return nil, status.Error(codes.Unauthenticated, "invalid token")
+		}
+
+		// 6. ДОБАВЛЯЕМ USERID В КОНТЕКСТ
+		ctx := context.WithValue(ctx, "userID", userID)
+		log.Printf("JWT валиден, userID: %s", userID)
+
+		// 7. ВЫЗЫВАЕМ СЛЕДУЮЩИЙ ОБРАБОТЧИК
+		return handler(ctx, req)
+	}
+}
+
+// LoggingInterceptor — логирует запросы и ответы
+func LoggingInterceptor() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		start := time.Now()
+		log.Printf("[%s] Запрос: %+v", info.FullMethod, req)
+		resp, err := handler(ctx, req)
+		log.Printf("[%s] Ответ: %+v, Ошибка: %v, Время: %v", info.FullMethod, resp, err, time.Since(start))
+		return resp, err
+	}
+}
+
+func main() {
+	// Создаём хранилище
+	store := NewUserStore()
+
+	// Создаём gRPC-сервер с интерсепторами (порядок важен!)
+	s := grpc.NewServer(
+		grpc.UnaryInterceptor(
+			grpc_middleware.ChainUnaryServer(
+				AuthInterceptor(),
+				LoggingInterceptor(),
+			),
+		),
+	)
+
+	pb.RegisterUserServiceServer(s, &UserServer{store: store})
+
+	// Запускаем слушатель
+	list, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Сервер запущен на :50051")
+	log.Println("Требуется JWT в metadata (authorization: Bearer <token>)")
+
+	go func() {
+		if err := s.Serve(list); err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	// Graceful shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	<-stop
+
+	log.Println("Остановка сервера...")
+	s.GracefulStop()
+	log.Println("Сервер остановлен")
+}
