@@ -2,9 +2,7 @@ package __2_interceptors
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -22,11 +20,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/grpc-ecosystem/go-grpc-middleware"
-	"google.golang.org/grpc"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	_ "google.golang.org/grpc/grpclog"
 
-	pb "github.com/example/interceptors-example/proto/user"
+	pb "github.com/"
 )
 
 /*

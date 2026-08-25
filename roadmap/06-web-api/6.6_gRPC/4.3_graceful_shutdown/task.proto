@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package user.v1;
+
+option go_package ="github.com/Kefir4c/go-knowledge-base\roadmap\06-web-api\6.6_gRPC\4.3_task;protov1";
+
+message ProcessTaskRequest {
+  string task_id = 1;
+  int32 delay_ms = 2;  // имитация долгой обработки
+}
+
+message TaskStatus {
+  string task_id = 1;
+  string status = 2;
+  int32 progress = 3;
+}
+
+service TaskService {
+  // Unary RPC
+  rpc ProcessTask (ProcessTaskRequest) returns (TaskStatus) {}
+
+  // Server-Streaming RPC (долгий стрим для демонстрации shutdown)
+  rpc ProcessTaskStream (ProcessTaskRequest) returns (stream TaskStatus) {}
+}

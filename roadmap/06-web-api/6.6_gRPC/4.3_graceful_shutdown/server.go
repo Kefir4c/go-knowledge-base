@@ -1,5 +1,24 @@
 package __3_graceful_shutdown
 
+import (
+	"context"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health"
+	"google.golang.org/grpc/status"
+
+	pb "github.com/"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+)
+
 /*
 РАЗДЕЛ 4.3: GRACEFUL SHUTDOWN
 Graceful Shutdown (корректное завершение) — это механизм, который позволяет
@@ -44,7 +63,7 @@ Graceful Shutdown (корректное завершение) — это про�
 В Kubernetes при завершении Pod'а сначала отправляется SIGTERM,
 и только через terminationGracePeriodSeconds (по умолчанию 30 секунд)
 — SIGKILL. Если сервер не успеет завершиться за это время,
-Kubernetes принудительно убьёт процесс.[reference:0]
+Kubernetes принудительно убьёт процесс.
 
 
 2. ПОЧЕМУ STOP() — ЭТО ПЛОХО ДЛЯ ПРОДАКШЕНА
@@ -307,3 +326,155 @@ GracefulStop() блокируется на неопределённое врем
   10. Graceful shutdown — обязательный паттерн для zero-downtime deployments.
 
 */
+
+// ХРАНИЛИЩЕ
+type TaskStore struct {
+	mu    sync.RWMutex
+	tasks map[string]int32 // task_id -> progress
+}
+
+func NewTaskStore() *TaskStore {
+	return &TaskStore{
+		tasks: make(map[string]int32),
+	}
+}
+
+func (s *TaskStore) GetProgress(taskID string) int32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.tasks[taskID]
+}
+
+func (s *TaskStore) SetProgress(taskID string, progress int32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tasks[taskID] = progress
+}
+
+//СЕРВЕР
+
+type TaskServer struct {
+	pb.UnimplementedTaskServiceServer
+	store *TaskStore
+}
+
+func (s *TaskServer) ProcessTask(ctx context.Context, req *pb.ProcessTaskRequest) (*pb.TaskStatus, error) {
+	if req.TaskId == "" {
+		return nil, status.Error(codes.InvalidArgument, "task_id is required")
+	}
+	if req.DelayMs > 0 {
+		time.Sleep(time.Duration(req.DelayMs) * time.Millisecond)
+	}
+	return &pb.TaskStatus{
+		TaskId:   req.TaskId,
+		Status:   "completed",
+		Progress: 100,
+	}, nil
+}
+
+func (s *TaskServer) ProcessTaskStream(req *pb.ProcessTaskRequest, stream pb.TaskService_ProcessTaskStreamServer) error {
+	ctx := stream.Context()
+	taskID := req.TaskId
+	delay := time.Duration(req.DealyMs) * time.Millisecond
+
+	log.Printf("Начало обработки задачи %s (задержка: %v)", taskID, delay)
+
+	for progress := 0; progress <= 100; progress += 10 {
+		/*
+			КРИТИЧЕСКИ ВАЖНО: проверяем контекст на каждой итерации
+			Если сервер завершается (GracefulStop), контекст отменяется,
+			и мы должны выйти из стрима, чтобы не блокировать shutdown
+		*/
+		select {
+		case <-ctx.Done:
+			log.Printf("Стрим задачи %s прерван (shutdown)", taskID)
+			return status.Error(codes.Canceled, "stream cancelled")
+		default:
+			// продолжаем
+		}
+
+		// Имитация обработки
+		time.Sleep(delay)
+
+		s.store.SetProgress(taskID, int32(progress))
+
+		status := "processing"
+		if progress == 100 {
+			status = "completed"
+		}
+
+		if err := stream.Send(&pb.TaskStatus{
+			TaskId:   taskID,
+			Status:   status,
+			Progress: int32(progress),
+		}); err != nil {
+			return err
+		}
+		log.Printf("Задача %s: прогресс %d%%", taskID, progress)
+	}
+	log.Printf("Задача %s завершена", taskID)
+	return nil
+}
+
+func main() {
+	// 1. СОЗДАЁМ СЕРВЕР
+	store := NewTaskStore()
+	s := grpc.NewServer()
+	pb.RegisterTaskServiceServer(s, &TaskServer{store: store})
+
+	// 2. HEALTH CHECKS (для Kubernetes)
+	healthServer := health.NewServer()
+	healthpb.RegisterHealthServer(s, healthServer)
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	log.Println("Health status: SERVING")
+
+	// 3. ЗАПУСК
+	lis, err := net.Listen("tcp", ":50051")
+	if err != nil {
+		log.Fatalf("Failed to listen: %v", err)
+	}
+
+	log.Println("Сервер запущен на :50051")
+
+	go func() {
+		if err := s.Serve(lis); err != nil {
+			if err != grpc.ErrServerStopped {
+				log.Fatalf("Server error: %v", err)
+			}
+		}
+	}()
+
+	// 4. ОЖИДАНИЕ СИГНАЛА
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("Получен сигнал завершения, начинаем graceful shutdown...")
+
+	// 5. HEALTH: NOT_SERVING
+	log.Println("Установка health статуса: NOT_SERVING")
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+
+	// Даём время балансировщику обновить состояние
+	time.Sleep(5 * time.Second)
+
+	// 6. GRACEFUL SHUTDOWN С ТАЙМАУТОМ
+	shutdownDone := make(chan struct{})
+	go func() {
+		log.Println("Ожидание завершения активных RPC...")
+		s.GracefulStop()
+		close(shutdownDone)
+		log.Println("Все RPC завершены")
+	}()
+
+	// Таймаут 28 секунд (как в Kubernetes)
+	select {
+	case <-shutdownDone:
+		log.Println("Graceful shutdown завершён")
+	case <-time.After(28 * time.Second):
+		log.Println("Таймаут graceful shutdown, принудительная остановка...")
+		s.Stop()
+	}
+
+	log.Println("Сервер остановлен")
+}
