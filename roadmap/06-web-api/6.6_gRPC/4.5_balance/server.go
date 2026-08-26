@@ -1,5 +1,27 @@
 package balance
 
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/status"
+
+	pb "github.com/"
+)
+
 /*
   РАЗДЕЛ 4.5: БАЛАНСИРОВКА НАГРУЗКИ (CLIENT-SIDE + DNS)
   Балансировка нагрузки — это механизм распределения запросов между несколькими
@@ -339,3 +361,161 @@ package balance
   11. В Kubernetes используют headless service для service discovery.
   12. round_robin — самая распространённая политика в gRPC.
 */
+
+// КОНФИГУРАЦИЯ
+var (
+	port     = flag.Int("ports", 50051, "The port to listen on")
+	serverID = flag.String("id", "server-default", "The server id")
+)
+
+//ХРАНИЛИЩЕ С КЭШЕМ
+
+type UserStore struct {
+	mu    sync.RWMutex
+	users map[string]*pb.User
+	cache map[string]*pb.User // имитация кэша
+	hit   int64
+	miss  int64
+}
+
+func NewUserStore() *UserStore {
+	return &UserStore{
+		users: map[string]*pb.User{
+			"1": {Id: "1", Name: "Alice", Email: "alice@ex.com"},
+			"2": {Id: "2", Name: "Bob", Email: "bob@ex.com"},
+			"3": {Id: "3", Name: "Charlie", Email: "charlie@ex.com"},
+			"4": {Id: "4", Name: "Diana", Email: "diana@ex.com"},
+			"5": {Id: "5", Name: "Eve", Email: "eve@ex.com"},
+		},
+		cache: make(map[string]*pb.User),
+	}
+}
+
+func (s *UserStore) Get(id string) (*pb.User, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Проверяем кэш
+	if u, ok := s.cache[id]; ok {
+		atomic.AddInt64(&s.hit, 1)
+		return u, true
+	}
+
+	// Ищем в БД
+	u, ok := s.users[id]
+	if ok {
+		s.cache[id] = u
+	}
+	atomic.AddInt64(&s.miss, 1)
+	return u, ok
+}
+
+func (s *UserStore) Create(name, email string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := fmt.Sprintf("%d", len(s.users)+1)
+	u := &pb.User{Id: id, Name: name, Email: email}
+	s.users[id] = u
+	s.cache[id] = u
+	return id
+}
+
+func (s *UserStore) Stats() (hit, miss int64) {
+	return atomic.LoadInt64(&s.hit), atomic.LoadInt64(&s.miss)
+}
+
+// СЕРВЕР
+type Server struct {
+	pb.UnimplementedUserServiceServer
+	store     *UserStore
+	id        string
+	port      int
+	reqCount  int64
+	startTime time.Time
+}
+
+func (s *Server) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.User, error) {
+	atomic.AddInt64((&s.reqCount), 1)
+
+	if req.Id == "" {
+		return nil, status.Error(codes.InvalidArgument, "id is required")
+	}
+
+	// Имитация разной нагрузки (рандомная задержка)
+	time.Sleep(time.Duration(5+time.Now().UnixNano()%20) * time.Millisecond)
+
+	user, ok := s.store.Get(req.Id)
+	if !ok {
+		return nil, status.Error(codes.NotFound, "user not found")
+	}
+
+	user.ProcessedBy = fmt.Sprintf("%s:%d", s.id, s.port)
+
+	log.Printf("[%s] GetUser: id=%s (кэш: hit=%d, miss=%d)",
+		s.id, req.Id, atomic.LoadInt64(&s.store.hit), atomic.LoadInt64(&s.store.miss))
+
+	return user, nil
+}
+
+func (s *Server) CreateUser(ctx context.Context, req *pb.CreateUserRequest) (*pb.User, error) {
+	atomic.AddInt64(&s.reqCount, 1)
+
+	if req.Name == "" || req.Email == "" {
+		return nil, status.Error(codes.InvalidArgument, "name and email are required")
+	}
+
+	id := s.store.Create(req.Name, req.Email)
+	user, _ := s.store.Get(id)
+	user.ProcessedBy = fmt.Sprintf("%s:%d", s.id, s.port)
+
+	log.Printf("[%s] CreateUser: id=%s, name=%s", s.id, id, req.Name)
+	return user, nil
+}
+
+func main() {
+	flag.Parse()
+
+	store := NewUserStore()
+	srv := &Server{
+		store:     store,
+		id:        *serverID,
+		port:      *port,
+		startTime: time.Now(),
+	}
+
+	lis, err := net.Listen("tcp", fmt.Sprintf(":d", *port))
+	if err != nil {
+		log.Fatalf("[%s] failed to listen: %v", *serverID, err)
+	}
+
+	grpcServer := grpc.NewServer()
+	pb.RegisterUserServiceServer(grpcServer, srv)
+
+	// Health Check
+	healthServer := health.NewServer()
+	healthpb.RegisterHealthServer(grpcServer, healthServer)
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+
+	log.Printf("[%s] server started on :%d", *serverID, *port)
+
+	go func() {
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("[%s] serve error: %v", *serverID, err)
+		}
+	}()
+
+	// Graceful Shutdown
+	quit := make(chan os.Signal, 1)
+
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Printf("[%s] shutting down...", *serverID)
+
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+
+	time.Sleep(2 * time.Second)
+
+	grpcServer.GracefulStop()
+	log.Printf("[%s] stopped", *serverID)
+}
