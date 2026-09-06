@@ -541,7 +541,7 @@ func RunAsyncProducer(ctx context.Context, acks string, topic string, broker str
 		}
 	}()
 
-	log.Printf("🚀 Запуск AsyncProducer (acks=%s, сообщений=%d)", acks, count)
+	log.Printf("Запуск AsyncProducer (acks=%s, сообщений=%d)", acks, count)
 
 	// Отправка сообщений
 	for i := 0; i < count; i++ {
