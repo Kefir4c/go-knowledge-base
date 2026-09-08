@@ -91,14 +91,14 @@ import (
 
   5.  ЖИЗНЕННЫЙ ЦИКЛ ТРАНЗАКЦИИ
 
-  5.1. ИНИЦИАЛИЗАЦИЯ (INITTRANSACTIONS)
-    • Продюсер вызывает initTransactions().
+  5.1. ИНИЦИАЛИЗАЦИЯ (INITTXN)
+    • Продюсер вызывает initTxn().
     • Coordinator проверяет transactional.id.
     • Назначается PID и epoch.
     • Продюсер готов к началу транзакции.
 
-  5.2. НАЧАЛО ТРАНЗАКЦИИ (BEGINTRANSACTION)
-    • Продюсер вызывает beginTransaction().
+  5.2. НАЧАЛО ТРАНЗАКЦИИ (BEGINTXN)
+    • Продюсер вызывает beginTxn().
     • Начинается новая транзакция.
     • Все последующие отправки будут частью этой транзакции.
 
@@ -110,16 +110,16 @@ import (
       - Sequence number (в пределах партиции)
       - Transaction marker
 
-  5.4. КОММИТ ТРАНЗАКЦИИ (COMMITTRANSACTION)
-    • Продюсер вызывает commitTransaction().
+  5.4. КОММИТ ТРАНЗАКЦИИ (COMMITTXN)
+    • Продюсер вызывает committxn().
     • Coordinator выполняет двухфазный коммит (2PC):
       1. Подготовка (prepare) — все брокеры подтверждают готовность.
       2. Фиксация (commit) — все брокеры записывают транзакцию.
     • Все сообщения становятся видимыми для консюмеров
       (если isolation.level = read_committed).
 
-  5.5. ОТКАТ ТРАНЗАКЦИИ (ABORTTRANSACTION)
-    • Продюсер вызывает abortTransaction().
+  5.5. ОТКАТ ТРАНЗАКЦИИ (ABORTTXN)
+    • Продюсер вызывает abortTxn().
     • Coordinator откатывает транзакцию.
     • Все сообщения транзакции удаляются.
 
@@ -227,8 +227,8 @@ import (
   1.  Транзакции решают проблему атомарной записи в несколько партиций.
   2.  Ключевые компоненты: transactional.id, PID, Epoch, Transaction Coordinator.
   3.  Transaction Coordinator управляет состоянием транзакций.
-  4.  Жизненный цикл: initTransactions() → beginTransaction() → send() →
-      commitTransaction() / abortTransaction().
+  4.  Жизненный цикл: initTxn() → beginTxn() → send() →
+      commitTxn() / abortTransaction().
   5.  sendOffsetsToTransaction() связывает коммит смещения консюмера
       с транзакцией продюсера.
   6.  isolation.level = read_committed позволяет читать только закоммиченные транзакции.
@@ -338,14 +338,14 @@ func (p *TransactionalProducer) ProcessOrder(orderID string, amount float64, off
 	// 2. Коммитим или откатываем
 	if *shouldAbort {
 		p.client.AbortTxn()
-		log.Printf("⚠️ Транзакция откатана")
+		log.Printf("⚠Транзакция откатана")
 		return nil
 	}
 
 	if err := p.client.CommitTxn(); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
-	log.Printf("✅ Транзакция закоммичена")
+	log.Printf("Транзакция закоммичена")
 	return nil
 }
 
@@ -373,7 +373,7 @@ func runProducer() error {
 	}
 
 	for _, order := range orders {
-		log.Printf("📦 Обработка заказа: %s (сумма: %.2f)", order.ID, order.Amount)
+		log.Printf("Обработка заказа: %s (сумма: %.2f)", order.ID, order.Amount)
 
 		// Имитация offset и partition (для демонстрации sendOffsetsToTransaction)
 		offset := int64(time.Now().UnixNano())
@@ -410,7 +410,7 @@ func (h *ConsumerHandler) Cleanup(session sarama.ConsumerGroupSession) error {
 // ConsumeClaim обрабатывает сообщения из партиции
 func (h *ConsumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for msg := range claim.Messages() {
-		log.Printf("📨 Получено сообщение: key=%s, value=%s, partition=%d, offset=%d",
+		log.Printf("Получено сообщение: key=%s, value=%s, partition=%d, offset=%d",
 			string(msg.Key), string(msg.Value), msg.Partition, msg.Offset)
 
 		// В реальном проекте здесь будет вызов транзакционного продюсера.
