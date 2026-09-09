@@ -49,7 +49,7 @@ import (
       (confluent-kafka-go) и обходит segmentio/kafka-go.
     • Хорошо подходит для нагрузки 50k-100k msg/s.
 
-  3.  СРАВНЕНИЕ С ДРУГИМИ БИБЛИОТЕКАМИ (ДЛЯ СОБЕСЕДОВАНИЯ)
+  3.  СРАВНЕНИЕ С ДРУГИМИ БИБЛИОТЕКАМИ
   ┌─────────────────────┬──────────────────┬──────────────────┬──────────────────┐
   │ Характеристика      │ sarama           │ confluent        │ kafka-go         │
   │                     │ (IBM)            │ (CGO)            │ (segmentio)      │
@@ -482,7 +482,7 @@ func runConsumer() {
 	signal.Notify(sigCh, os.Interrupt, os.Kill)
 	go func() {
 		<-sigCh
-		log.Println("⏳ Получен сигнал завершения...")
+		log.Println("Получен сигнал завершения...")
 		cancel()
 	}()
 

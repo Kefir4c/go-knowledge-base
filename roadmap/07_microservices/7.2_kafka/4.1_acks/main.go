@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/IBM/sarama"
@@ -211,8 +212,8 @@ import (
     │  → Но доступность снижается (при сбое 2 брокеров запись невозможна)     │
     └─────────────────────────────────────────────────────────────────────────┘
 
-  4.3. СВЯЗЬ ACKS=ALL И MIN.INSYNC.REPLICAS — НАСТОЯЩАЯ МАГИЯ
-    Эти две настройки работают в паре:
+  4.3. СВЯЗЬ ACKS=ALL И MIN.INSYNC.REPLICAS, И REPLICATION.FACROR.factor — НАСТОЯЩАЯ МАГИЯ
+      Эти три настройки работают в паре:
       acks=all + min.insync.replicas=2 + replication.factor=3
 
       → При 3 работающих брокерах: всё ОК, запись идёт
@@ -547,7 +548,7 @@ func RunAsyncProducer(ctx context.Context, acks string, topic string, broker str
 	for i := 0; i < count; i++ {
 		select {
 		case <-ctx.Done():
-			log.Println("⏳ Прервано по контексту")
+			log.Println("Прервано по контексту")
 			producer.AsyncClose()
 			wg.Wait()
 			return nil
@@ -590,7 +591,7 @@ func main() {
 
 	// Graceful shutdown
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, os.Kill)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		log.Println("Получен сигнал завершения...")

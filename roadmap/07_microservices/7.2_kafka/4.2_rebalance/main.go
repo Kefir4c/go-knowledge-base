@@ -532,7 +532,7 @@ func (h *ConsumerHandler) ConsumeClaim(session sarama.ConsumerGroupSession, clai
 		// Имитация обработки (например, запись в БД)
 		time.Sleep(50 * time.Millisecond)
 
-		// 🔥 Ручной отметка смещения после успешной обработки
+		//  Ручной отметка смещения после успешной обработки
 		session.MarkMessage(msg, "")
 
 		// Периодический коммит для уменьшения нагрузки

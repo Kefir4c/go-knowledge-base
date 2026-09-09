@@ -230,16 +230,15 @@ import (
 
     АРХИТЕКТУРА:
       ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-      │  Kafka Broker   │───▶│   JMX Exporter  │────▶│   Prometheus    │
+      │  Kafka Broker   │ ───▶│   JMX Exporter  │────▶│   Prometheus    │
       │  (JMX Metrics)  │     │  (HTTP /metrics)│     │   (Storage)     │
       └─────────────────┘     └─────────────────┘     └─────────────────┘
                                                                │
                                                                ▼
-                                                        ┌─────────────────┐
-                                                        │    Grafana      │
-                                                        │  (Dashboards)   │
-                                                        └─────────────────┘
-
+                                                      ┌─────────────────┐
+                                                      │    Grafana      │
+                                                      │  (Dashboards)   │
+                                                      └─────────────────┘
     КОМПОНЕНТЫ:
       • JMX Exporter — экспортирует JMX-метрики Kafka в формате Prometheus.
       • Prometheus — собирает и хранит метрики как временные ряды.
@@ -330,10 +329,9 @@ import (
             annotations:
               summary: "Offline partitions in Kafka cluster"
 
-  7.  РАСШИРЕННЫЕ ТЕМЫ: DISTRIBUTED TRACING И ЛОГИРОВАНИЕ
+  7.  DISTRIBUTED TRACING И ЛОГИРОВАНИЕ
 
   7.1. DISTRIBUTED TRACING (ОТ SLA JEAGER/OPENTELEMETRY)
-
     Для распределённых систем важно отслеживать запросы через все сервисы.
     OpenTelemetry позволяет передавать trace_id через Kafka.
     КАК ЭТО РАБОТАЕТ:
