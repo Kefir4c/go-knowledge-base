@@ -708,9 +708,7 @@ const (
 	kafkaTopic = "app.events"
 )
 
-// ============================================================
 // SCHEMA
-// ============================================================
 const schema = `
 CREATE TABLE IF NOT EXISTS orders (
     id UUID PRIMARY KEY, user_id TEXT, amount NUMERIC, status TEXT);
@@ -751,9 +749,7 @@ CREATE TABLE IF NOT EXISTS saga_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
 `
 
-// ============================================================
 // OUTBOX
-// ============================================================
 type Event struct {
 	ID            uuid.UUID
 	AggregateType string
@@ -775,9 +771,7 @@ func insertOutbox(ctx context.Context, tx pgx.Tx, e Event) error {
 	return err
 }
 
-// ============================================================
 // RELAY: outbox -> kafka
-// ============================================================
 type Relay struct {
 	pool *pgxpool.Pool
 	send func(ctx context.Context, eventID uuid.UUID, key string, payload []byte) error
@@ -855,9 +849,7 @@ func (r *Relay) tick(ctx context.Context) error {
 	return nil
 }
 
-// ============================================================
 // IDEMPOTENT CONSUMER
-// ============================================================
 func consumeIdempotent(
 	ctx context.Context, pool *pgxpool.Pool,
 	group string, eventID uuid.UUID,
@@ -884,9 +876,7 @@ func consumeIdempotent(
 	return tx.Commit(ctx)
 }
 
-// ============================================================
 // SAGA
-// ============================================================
 type SagaStep struct {
 	Name       string
 	IsPivot    bool
@@ -992,10 +982,8 @@ func hasPivot(steps []SagaStep, upTo int) bool {
 	return false
 }
 
-// ============================================================
 // ШАГИ САГИ ЗАКАЗА
 // Каждый Forward/Compensate пишет событие в outbox.
-// ============================================================
 func buildOrderSaga() []SagaStep {
 	return []SagaStep{
 		{
@@ -1104,9 +1092,7 @@ func buildOrderSaga() []SagaStep {
 	}
 }
 
-// ============================================================
 // KAFKA CONSUMER
-// ============================================================
 func runConsumer(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) {
 	r := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:  []string{kafkaAddr},
@@ -1147,9 +1133,7 @@ func runConsumer(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) {
 	}
 }
 
-// ============================================================
 // MAIN
-// ============================================================
 func main() {
 	log := slog.New(slog.NewTextHandler(os.Stdout,
 		&slog.HandlerOptions{Level: slog.LevelInfo}))
