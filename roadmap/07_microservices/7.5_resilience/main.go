@@ -1,5 +1,23 @@
 package main
 
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"math"
+	"math/rand"
+	"net/http"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/sony/gobreaker"
+)
+
 /*
   УРОК 8.5: УСТОЙЧИВОСТЬ (RESILIENCE)
   Устойчивость — это способность системы продолжать работать
@@ -684,3 +702,307 @@ package main
       Потом bulkhead и fallback. По мере появления реальных
       проблем.
 */
+
+// BULKHEAD — ограничение одновременных запросов
+var ErrBulkheadFull = errors.New("bulkhead full")
+
+type Bulkhead struct {
+	sem chan struct{}
+}
+
+func NewBulkhead(n int) *Bulkhead {
+	return &Bulkhead{sem: make(chan struct{}, n)}
+}
+
+func (b *Bulkhead) Do(ctx context.Context, fn func() ([]byte, error)) ([]byte, error) {
+	select {
+	case b.sem <- struct{}{}:
+		defer func() { <-b.sem }()
+		return fn()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		return nil, ErrBulkheadFull
+	}
+}
+
+// RETRY CONFIG — backoff + full jitter
+type RetryConfig struct {
+	Attempts  int
+	BaseDelay time.Duration
+	MaxDelay  time.Duration
+}
+
+// backoff — full jitter: random(0, min(maxDelay, base * 2^attempt)).
+// Full jitter лучше чистого backoff: клиенты не синхронизируются
+// и не создают thundering herd.
+func (r RetryConfig) backoff(attempt int) time.Duration {
+	exp := math.Pow(2, float64(attempt))
+	d := time.Duration(float64(r.BaseDelay) * exp)
+	if d > r.MaxDelay {
+		d = r.MaxDelay
+	}
+	if d <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int63n(int64(d)))
+}
+
+// CLIENT ERROR — 4xx, retry не нужен
+type clientError struct {
+	code int
+}
+
+func (e *clientError) Error() string {
+	return fmt.Sprintf("client error: %d", e.code)
+}
+
+// RESILIENT CLIENT
+
+type ResilientClient struct {
+	http     *http.Client
+	cb       *gobreaker.CircuitBreaker
+	bulkhead *Bulkhead
+	retry    RetryConfig
+	log      *slog.Logger
+
+	// fallback: последний успешный ответ
+	mu     sync.RWMutex
+	lastOK []byte
+}
+
+func NewResilientClient(log *slog.Logger) *ResilientClient {
+	cb := gobreaker.NewCircuitBreaker(gobreaker.Settings{
+		Name:        "downstream",
+		MaxRequests: 3,                // в HALF_OPEN пропускаем 3 запроса
+		Interval:    10 * time.Second, // в CLOSED сбрасываем счётчики
+		Timeout:     5 * time.Second,  // в OPEN ждём 5 сек до HALF_OPEN
+		ReadyToTrip: func(c gobreaker.Counts) bool {
+			ratio := float64(c.TotalFailures) / float64(c.Requests)
+			return c.Requests >= 5 && ratio >= 0.6
+		},
+		OnStateChange: func(name string, from, to gobreaker.State) {
+			log.Warn("circuit breaker state change",
+				"name", name, "from", from.String(), "to", to.String())
+		},
+	})
+
+	return &ResilientClient{
+		http: &http.Client{
+			Timeout: 3 * time.Second, // HTTP-клиент тоже имеет timeout
+		},
+		cb:       cb,
+		bulkhead: NewBulkhead(5), // максимум 5 одновременных запросов
+		retry: RetryConfig{
+			Attempts:  3,
+			BaseDelay: 100 * time.Millisecond,
+			MaxDelay:  1 * time.Second,
+		},
+		log: log,
+	}
+}
+
+// Get — основной метод с полной цепочкой устойчивости.
+//
+// Порядок: CB → retry → bulkhead → HTTP → fallback.
+func (c *ResilientClient) Get(ctx context.Context, url string) ([]byte, error) {
+	// Circuit Breaker оборачивает всю логику retry.
+	// Если CB открыт — retry даже не начинается.
+	result, err := c.cb.Execute(func() (interface{}, error) {
+		return c.tryWithRetry(ctx, url)
+	})
+
+	if err != nil {
+		return c.fallbackOrErr(err)
+	}
+
+	body := result.([]byte)
+
+	// Успех — обновляем fallback-кэш.
+	c.mu.Lock()
+	c.lastOK = body
+	c.mu.Unlock()
+
+	return body, nil
+}
+
+// tryWithRetry — retry-цикл с backoff + jitter.
+func (c *ResilientClient) tryWithRetry(ctx context.Context, url string) ([]byte, error) {
+	var lastErr error
+
+	for attempt := 0; attempt < c.retry.Attempts; attempt++ {
+		if attempt > 0 {
+			delay := c.retry.backoff(attempt - 1)
+			c.log.Info("retry", "attempt", attempt+1, "delay", delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+
+		body, err := c.bulkhead.Do(ctx, func() ([]byte, error) {
+			return c.doHTTP(ctx, url)
+		})
+
+		if err == nil {
+			return body, nil
+		}
+
+		lastErr = err
+
+		// 4xx — retry бессмыслен. Пробрасываем наверх.
+		var ce *clientError
+		if errors.As(err, &ce) {
+			return nil, err
+		}
+	}
+
+	return nil, lastErr
+}
+
+// doHTTP — сам HTTP-вызов.
+func (c *ResilientClient) doHTTP(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Идемпотентность: реальный сервис по этому ключу
+	// поймёт, что запрос уже был, и не выполнит операцию дважды.
+	req.Header.Set("Idempotency-Key", fmt.Sprintf("req-%d", time.Now().UnixNano()))
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	switch {
+	case resp.StatusCode >= 500:
+		return nil, fmt.Errorf("server error: %d", resp.StatusCode)
+	case resp.StatusCode >= 400:
+		return nil, &clientError{code: resp.StatusCode}
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// fallbackOrErr — если есть последний успешный ответ, отдаём его.
+// Это graceful degradation: система работает хуже, но работает.
+func (c *ResilientClient) fallbackOrErr(err error) ([]byte, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.lastOK != nil {
+		c.log.Warn("fallback: returning cached response", "err", err)
+		return c.lastOK, nil
+	}
+	return nil, err
+}
+
+// FAKE DOWNSTREAM — сервер, который можно ломать
+
+type fakeDownstream struct {
+	mode    atomic.Value // string
+	counter atomic.Int64
+}
+
+func (f *fakeDownstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	mode := f.mode.Load().(string)
+	n := f.counter.Add(1)
+
+	switch mode {
+	case "ok":
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "ok",
+			"n":      n,
+			"time":   time.Now().Format("15:04:05"),
+		})
+	case "flaky":
+		if n%2 == 0 {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintln(w, "flaky error")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "n": n})
+	case "down":
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintln(w, "service unavailable")
+	case "slow":
+		time.Sleep(10 * time.Second)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `{"status":"slow"}`)
+	}
+}
+
+// MAIN
+
+const downstreamURL = "http://localhost:9001"
+
+func main() {
+	log := slog.New(slog.NewTextHandler(os.Stdout,
+		&slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// --- запуск fake downstream ---
+	ds := &fakeDownstream{}
+	ds.mode.Store("ok")
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/", ds)
+	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
+		mode := r.URL.Query().Get("mode")
+		ds.mode.Store(mode)
+		ds.counter.Store(0)
+		fmt.Fprintf(w, "mode=%s\n", mode)
+	})
+
+	go func() {
+		if err := http.ListenAndServe(":9001", mux); err != nil {
+			log.Error("downstream", "err", err)
+		}
+	}()
+	time.Sleep(100 * time.Millisecond)
+
+	// --- клиент ---
+	client := NewResilientClient(log)
+
+	// --- сценарии ---
+	scenario(log, client, "1. Успешный запрос", "ok", 3)
+	scenario(log, client, "2. Flaky (50% ошибок, retry спасает)", "flaky", 5)
+	scenario(log, client, "3. Down (CB открывается, fallback)", "down", 10)
+	time.Sleep(6 * time.Second)
+	scenario(log, client, "4. Recover (CB восстанавливается)", "ok", 5)
+
+	fmt.Println("\nВсе сценарии завершены.")
+}
+
+// scenario — прогон N запросов в заданном режиме.
+func scenario(log *slog.Logger, client *ResilientClient, name, mode string, count int) {
+	fmt.Printf("\n========== %s ==========\n", name)
+
+	// Переключаем режим downstream.
+	resp, err := http.Get(downstreamURL + "/control?mode=" + mode)
+	if err == nil {
+		resp.Body.Close()
+	}
+
+	for i := 0; i < count; i++ {
+		// Общий бюджет на всю операцию — 3 секунды.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		body, err := client.Get(ctx, downstreamURL+"/api/data")
+		cancel()
+
+		if err != nil {
+			fmt.Printf("  [%d] ✗ error: %v\n", i+1, err)
+		} else {
+			s := string(body)
+			if len(s) > 60 {
+				s = s[:60] + "..."
+			}
+			fmt.Printf("  [%d] ✓ %s", i+1, s)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
