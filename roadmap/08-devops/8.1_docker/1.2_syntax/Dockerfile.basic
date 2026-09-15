@@ -1,0 +1,21 @@
+# FROM — базовый образ
+FROM golang:1.22-alpine
+
+# LABEL — метаданные
+LABEL maintainer = "semka.m@mail.ru"
+LABEL description = ""Dockerfile practice -basic"
+
+# WORKDIR — рабочая директория
+WORKDIR /app
+
+# COPY — копируем всё
+COPY . .
+
+# RUN — собираем бинарник
+RUN go builder -o server .
+
+# EXPOSE — документируем порт
+EXPOSE 8080
+
+# CMD — команда запуска
+CMD ["./server"]
