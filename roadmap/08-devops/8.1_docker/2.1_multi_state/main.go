@@ -1,7 +1,18 @@
 package main
 
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+)
+
 /*
-  УРОК 9.2.1: MULTI-STAGE BUILDS
+  УРОК 2.1: MULTI-STAGE BUILDS
   Компилятор Go нужен только для сборки. В рантайме он не нужен.
   Но если ты собираешь образ наивно — в него попадёт всё: Go SDK,
   gcc, git, промежуточные объектные файлы, кэш модулей. Образ
@@ -704,3 +715,45 @@ package main
       BuildKit. Итог — образ 15 МБ вместо 800. Nonroot,
       без shell, минимальный attack surface».
 */
+
+var (
+	version = "dev"
+	commit  = "none"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("version=" + version + " commit=" + commit))
+	})
+
+	srv := &http.Server{Addr: ":8080", Handler: mux}
+
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	go func() {
+		logger.Info("listening", "version", version, "commit", commit)
+		if err := srv.ListenAndServe(); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
+			logger.Error("server failed", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info("shutting down")
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(
+		context.Background(), 15*time.Second)
+	defer cancelShutdown()
+	_ = srv.Shutdown(shutdownCtx)
+	logger.Info("stopped")
+}
