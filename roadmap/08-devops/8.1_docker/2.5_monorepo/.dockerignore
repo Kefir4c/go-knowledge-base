@@ -1,0 +1,8 @@
+*
+
+!go.work
+!go.work.sum
+!services/order/**
+!services/order
+!shared/logging/**
+!chared/logging

@@ -1,0 +1,40 @@
+# --- Git ---
+.git
+.gitignore
+.gitattributes
+
+# --- CI ---
+.github
+.gitlab-ci.yml
+.circleci
+
+# --- IDE ---
+.idea
+.vscode
+*.swp
+*.swo
+
+# --- Документация ---
+*.md
+docs/
+LICENSE
+
+# --- Артефакты сборки ---
+bin/
+dist/
+build/
+*.exe
+*.test
+coverage.out
+coverage.html
+
+# --- Локальное ---
+tmp/
+.env
+.env.*
+*.log
+
+# --- Docker ---
+Dockerfile*
+docker-compose*.yml
+.dockerignore
