@@ -1,7 +1,21 @@
 package main
 
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+)
+
 /*
-  УРОК 9.3.1: NON-ROOT ПОЛЬЗОВАТЕЛЬ И ПРАВА НА VOLUMES
+  УРОК 3.1: NON-ROOT ПОЛЬЗОВАТЕЛЬ И ПРАВА НА VOLUMES
   По умолчанию контейнер работает под root. Это значит, что
   внутри контейнера процесс имеет UID 0 и полные права. Если
   злоумышленник пробьёт сервис — он root. Не в контейнере вообще,
@@ -716,3 +730,125 @@ package main
       пакетов, COPY без chown, chown в Dockerfile для
       bind mount, 0777, один UID на всё.
 */
+
+const (
+	dataDir  = "/app/data"
+	dataFile = "/app/data/counter.txt"
+)
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+
+	// Сразу проверяем, что можем писать в data-директорию.
+	// Если нет — падаем громко, чтобы не пропустить в проде.
+	if err := ensureDataDir(); err != nil {
+		logger.Error("failed to init data dir", "err", err)
+		os.Exit(1)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/info", handleInfo)
+	mux.HandleFunc("/write", handleWrite)
+	mux.HandleFunc("/read", handleRead)
+	mux.HandleFunc("/perm", handlePerm)
+
+	srv := &http.Server{Addr: ":8080", Handler: mux}
+
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGTERM, syscall.SIGINT)
+	defer cancel()
+
+	go func() {
+		logger.Info("listening", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
+			logger.Error("failed", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.Info("shutting down")
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(
+		context.Background(), 10*time.Second)
+	defer cancelShutdown()
+	_ = srv.Shutdown(shutdownCtx)
+}
+
+func ensureDataDir() error {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	// Пробная запись.
+	if err := os.WriteFile(filepath.Join(dataDir, ".init"), []byte("ok"), 0o644); err != nil {
+		return fmt.Errorf("write test: %w", err)
+	}
+	return nil
+}
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+// handleInfo — отдаёт UID/GID процесса и путь data-директории.
+func handleInfo(w http.ResponseWriter, r *http.Request) {
+	info := map[string]any{
+		"pid":  os.Getpid(),
+		"uid":  os.Getuid(),
+		"gid":  os.Getgid(),
+		"data": dataDir,
+	}
+	_ = json.NewEncoder(w).Encode(info)
+}
+
+// handleWrite — пишет timestamp в файл. Показывает права.
+func handleWrite(w http.ResponseWriter, r *http.Request) {
+	content := fmt.Sprintf("%s\n", time.Now().Format(time.RFC3339Nano))
+	if err := os.WriteFile(dataFile, []byte(content), 0o644); err != nil {
+		http.Error(w, "write failed: "+err.Error(), http.StatusForbidden)
+		return
+	}
+	fmt.Fprintf(w, "wrote to %s\n", dataFile)
+}
+
+// handleRead — читает файл.
+func handleRead(w http.ResponseWriter, r *http.Request) {
+	data, err := os.ReadFile(dataFile)
+	if err != nil {
+		http.Error(w, "read failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(data)
+}
+
+// handlePerm — показывает, под кем работаем и что можем в data-директории.
+func handlePerm(w http.ResponseWriter, r *http.Request) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Пытаемся записать новый файл.
+	testFile := filepath.Join(dataDir, fmt.Sprintf("test-%d", time.Now().UnixNano()))
+	canWrite := true
+	writeErr := ""
+	if err := os.WriteFile(testFile, []byte("test"), 0o644); err != nil {
+		canWrite = false
+		writeErr = err.Error()
+	} else {
+		_ = os.Remove(testFile)
+	}
+
+	result := map[string]any{
+		"uid":       os.Getuid(),
+		"gid":       os.Getgid(),
+		"can_write": canWrite,
+		"write_err": writeErr,
+		"files":     len(entries),
+	}
+	_ = json.NewEncoder(w).Encode(result)
+}
