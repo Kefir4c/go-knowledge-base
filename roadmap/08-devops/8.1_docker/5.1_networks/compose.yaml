@@ -1,0 +1,130 @@
+name: ${COMPOSE_PROJECT_NAME:-networks-prod}
+
+services:
+  # NGINX — точка входа. В сетях frontend и monitoring.
+  # В backend НЕ подключён — не видит напрямую ни backend,
+  # ни postgres.
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${NGINX_PORT}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-","http://localhost/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - frontend
+      - monitoring
+
+  # BACKEND — nginx proxy_pass → backend:80.
+  # В сетях frontend (для nginx) и backend (для postgres).
+  # Мост между двумя сегментами.
+  backend:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "-O", "-", "http://localhost/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - backend
+      - frontend
+
+  # POSTGRES — только в backend, сеть internal.
+  # Нет доступа в интернет.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: app
+    volumes:
+     - pgdata:/var/lib/postgresql/data
+    healthcheck:
+     test: ["CMD-SHELL", "pg_isready -U app -d app"]
+     interval: 5s
+     timeout: 3s
+     retries: 5
+     start_period: 10s
+    restart: unless-stopped
+    networks:
+      - backend
+
+  # ============================================================
+  # REDIS — только в backend, internal. Кэш.
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+    restart: unless-stopped
+    networks:
+      - backend
+
+  # ============================================================
+  # PROMETHEUS — в monitoring сети. Не видит backend
+  # и postgres. Только nginx для метрик.
+  # ============================================================
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    restart: unless-stopped
+    networks:
+      - monitoring
+
+  # ============================================================
+  # ADMINER — UI для БД. Только profile tools.
+  # В backend сети, чтобы видеть postgres.
+  # ============================================================
+  adminer:
+    image: adminer:4
+    ports:
+      - "127.0.0.1:8090:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - backend
+    profiles:
+      - tools
+
+volumes:
+  pgdata:
+  redisdata:
+  nginx-logs:
+  prometheus-data:
+
+networks:
+    # Frontend — внешний сегмент.
+  frontend:
+    driver: bridge
+
+    # Backend — внутренний, без выхода в интернет.
+  backend:
+    driver: bridge
+    internal: true
+
+    # Monitoring — отдельный сегмент.
+  monitoring:
+    driver: bridge

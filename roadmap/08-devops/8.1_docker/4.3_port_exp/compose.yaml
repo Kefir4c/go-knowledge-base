@@ -1,0 +1,41 @@
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "${NGINX_PORT}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - frontend
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASS: secret
+      POSTGRES_DB: app
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - backend
+    expose:
+      - "5432"
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - backend
+    expose:
+      - "6379"
+
+volumes:
+  pgdata:
+
+networks:
+  frontend:
+  backend:
