@@ -8,7 +8,7 @@ package main
   пуля. Они уменьшают вероятность гонки, но не убирают её.
   Остаются случаи:
     • База перезапустилась во время работы — соединение
-      порвалось.
+      прервалось.
     • Сеть моргнула — пакеты потерялись.
     • База ещё не готова, хотя healthcheck уже прошёл
       (например, реплика).
@@ -180,21 +180,17 @@ package main
 
   FULL JITTER:
     delay = random(0, baseDelay)
-
   Агрессивный. Полностью заменяет backoff случайной величиной.
 
   EQUAL JITTER:
     delay = baseDelay/2 + random(0, baseDelay/2)
-
   Половина фиксирована, половина случайна.
 
   DECORRELATED JITTER:
     delay = min(max, random(baseDelay, prevDelay*3))
-
   Каждая задержка зависит от предыдущей.
 
   FULL JITTER В GO:
-
     func backoffWithJitter(attempt int, initial, max time.Duration) time.Duration {
         base := initial * time.Duration(math.Pow(2, float64(attempt)))
         if base > max {
