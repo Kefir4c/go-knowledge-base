@@ -17,7 +17,7 @@ services:
       timeout: 2s
       retries: 5
       start_period: 10s
-    restart: unles-stopped
+      restart: unles-stopped
     networks:
       - backend
     expose:
@@ -34,7 +34,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-      restart: unles-stopped
+      restart: unless-stopped
     networks:
       - backend
     expose:
@@ -53,18 +53,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      healthcheck:
+    healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://localhost/health"]
       interval: 10s
       timeout: 3s
       retries: 3
-    restart: unles-stopped
+    restart: unless-stopped
     networks:
       - frontend
       - backend      
 
 # ADMINER — UI для Postgres (опционально, через profiles)
-adminer:
+  adminer:
     image: adminer:4
     ports:
       - "${ADMINER_PORT}:8080"
