@@ -612,8 +612,7 @@ package main
   УСЛОВИЯ DEPENDS_ON:
     service_started — контейнер запущен (дефолт).
     service_healthy — healthcheck прошёл.
-    service_completed_successfully — завершился с кодом 0
-                                      (для одноразовых задач).
+    service_completed_successfully — завершился с кодом 0 (для одноразовых задач).
 
   ПРИМЕР С МИГРАЦИЯМИ:
     services:
