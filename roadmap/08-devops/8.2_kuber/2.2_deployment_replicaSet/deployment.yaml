@@ -1,0 +1,84 @@
+# 1. NAMESPACE
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    env: practice
+---
+
+# 2. DEPLOYMENT — основной объект
+#    Иерархия: Deployment → ReplicaSet → Pod
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: demo
+  labels:
+    app: app
+  annotations:
+    kubernetes.io/change-cause: "initial deployment v1.0.0"
+spec:
+  replicas: 3
+  # selector должен совпадать с template.metadata.labels
+  selector:
+    matchLabels:
+      app: app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # можно создать на 1 Pod больше
+      maxUnavailable: 0    # нельзя убирать старые, пока новые не готовы
+  revisionHistoryLimit: 5  # храним 5 ревизий для отката
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+      - name: app
+        image: nginx:1.27-alpine
+        ports:
+        - name: http
+          containerPort: 80
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        # preStop даёт время на обновление endpoints.
+        lifecycle:
+          preStop:
+            exec:
+              command: ["/bin/sh", "-c", "sleep 2"]
+      terminationGracePeriodSeconds: 30
+---   
+
+# 3. SERVICE — стабильный доступ к Pod'ам
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: demo
+spec:
+  type: ClusterIP
+  selector:
+    app: app
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
