@@ -1,0 +1,276 @@
+# k8s/all-objects.yaml
+# 1. NAMESPACE — логическая изоляция
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+  labels:
+    env: practice
+---
+
+# 2. CONFIGMAP — несекретные конфиги
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: demo
+data:
+  APP_ENV: "practice"
+  LOG_LEVEL: "debug"
+  DB_HOST: "postgres.demo.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "app"
+---
+
+# 3. SECRET — пароли и токены (base64, не шифрование!)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  namespace: demo
+type: Opaque
+stringData:
+  DB_USER: "app"
+  DB_PASSWORD: "supersecret"
+---
+
+# 4. DEPLOYMENT — stateless приложение (Go-сервис)
+#    Иерархия: Deployment → ReplicaSet → Pod
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: demo
+  labels:
+    app: app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: app              # должно совпадать с template.labels
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1           # на 1 Pod больше можно
+      maxUnavailable: 0     # нельзя убирать старые
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27-alpine    # для демо вместо Go-сервиса
+          ports:
+            - name: http
+              containerPort: 80
+          envFrom:
+            - configMapRef:
+                name: app-config        # все переменные из ConfigMap
+            - secretRef:
+                name: app-secrets       # все переменные из Secret
+          resources:
+            requests:                 # Scheduler использует для выбора ноды
+              cpu: "50m"
+              memory: "64Mi"
+            limits:                   # потолок, при превышении OOMKilled
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:              # если упал — Pod перезапускается
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:             # если упал — убирается из Service
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 5
+---
+
+# 5. SERVICE (ClusterIP) — стабильный доступ к Pod'ам
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: demo
+spec:
+  type: ClusterIP
+  selector:
+    app: app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+---
+
+# 6. SERVICE (NodePort) — доступ снаружи через порт ноды
+#    Для демонстрации. В проде используется LoadBalancer или Ingress.
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-nodeport
+  namespace: demo
+spec:
+  type: NodePort
+  selector:
+    app: app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      nodePort: 30080             # диапазон 30000-32767
+---
+
+# 7. INGRESS — HTTP-роутинг снаружи (нужен Ingress Controller)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app
+  namespace: demo
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app
+                port:
+                  number: 80
+---
+
+# 8. JOB — одноразовая задача (например, миграции)
+# ============================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: app-migrate
+  namespace: demo
+spec:
+  backoffLimit: 3                    # максимум 3 попытки
+  ttlSecondsAfterFinished: 120       # удалить через 2 минуты
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: alpine:3.19
+          command: ["sh", "-c", "echo 'migrations applied' && sleep 2"]
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+
+---
+# ============================================================
+# 9. CRONJOB — задача по расписанию (например, бэкапы)
+# ============================================================
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: app-backup
+  namespace: demo
+spec:
+  schedule: "*/5 * * * *"            # каждые 5 минут (для демо)
+  concurrencyPolicy: Forbid          # не запускать, если предыдущий работает
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: alpine:3.19
+              command: ["sh", "-c", "echo 'backup done' && date"]
+
+---
+
+# 10. STATEFULSET — для stateful приложений (БД)
+#     Стабильные имена: postgres-0, postgres-1
+#     Стабильные volumes через volumeClaimTemplates
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: demo
+spec:
+  serviceName: postgres              # имя headless service
+  replicas: 1                        # для демо 1, для HA 3+
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: DB_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secrets
+                  key: DB_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: DB_NAME
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+  volumeClaimTemplates:              # автосоздание PVC для каждого Pod
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+---
+
+# 11. HEADLESS SERVICE для StatefulSet
+#     clusterIP: None — DNS отдаёт IP всех Pod'ов
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: demo
+spec:
+  clusterIP: None                    # headless
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

@@ -9,7 +9,6 @@
 - Знать про namespaces, rolling updates, HPA.
 - Диагностировать типовые проблемы (CrashLoopBackOff, OOMKilled).
 
----
 ## 🟢 БЛОК 1: АРХИТЕКТУРА
 ### 1.1. Control plane vs Worker nodes
 **Логика:** K8s — кластер из нод. Control plane управляет, worker nodes запускают приложения.
@@ -37,7 +36,6 @@
 **Что учить:** `kubectl get/describe/logs/exec/apply/delete`, `port-forward`, `scale`, `rollout status/undo/history`. `kubectl get all -n <ns>`. `kubectl config use-context`, `kubectx`/`kubens`.
 **Связь с Go:** Из Go-сервиса работа с K8s API — через `client-go`. Для отладки — `kubectl exec -it <pod> -- sh`.
 
----
 ## 🟡 БЛОК 2: POD И РАБОЧИЕ НАГРУЗКИ
 ### 2.1. Pod — что это
 **Логика:** Pod — минимальная единица. Внутри — один или несколько контейнеров, разделяющих network namespace и volumes.
@@ -87,7 +85,6 @@
 - `kubectl top pod/node` — потребление ресурсов.
   **Связь с Go:** `GOMEMLIMIT` должен быть на 10-20% меньше `limits.memory`. Иначе OOM-kill.
 
----
 ## 🟠 БЛОК 3: СЕТИ И ДОСТУП
 ### 3.1. Service — типы
 **Логика:** Pod'ы эфемерны, IP меняются. Service — стабильная точка доступа.
@@ -110,7 +107,6 @@
 - Annotations для настройки контроллера (таймауты, body size).
   **Связь с Go:** Обычно Ingress → Go-сервис через Service. Таймауты и body-size настраиваются в annotations.
 
----
 ## 🔴 БЛОК 4: КОНФИГИ И СЕКРЕТЫ
 ### 4.1. ConfigMap
 **Логика:** Конфиги — отдельно от образа. Один образ — разные окружения.
@@ -130,7 +126,6 @@
 - Для прода — Sealed Secrets, External Secrets, Vault.
   **Связь с Go:** Go-сервис читает секреты из env или из `/etc/secrets/` (volume).
 
----
 ## 🟣 БЛОК 5: ЭКСПЛУАТАЦИЯ
 ### 5.1. Namespaces
 **Логика:** Логическая изоляция. Команды, окружения, проекты.
@@ -168,7 +163,6 @@
 - Events: `kubectl get events`, `kubectl describe`.
 - Типовые проблемы: **CrashLoopBackOff**, **ImagePullBackOff**, **OOMKilled**, **Pending**.
 
----
 ## 🔵 БЛОК 6: ДИАГНОСТИКА
 ### 6.1. Типовые проблемы
 **Логика:** 90% времени в K8s — понять, почему Pod не работает.
@@ -188,7 +182,6 @@
 - `kubectl debug` — ephemeral container.
 - `k9s` — TUI для быстрой навигации.
 
----
 ## КЛЮЧЕВЫЕ ВЫВОДЫ
 1. **Control plane** (API Server, etcd, Scheduler, Controller Manager) управляет кластером. **Worker nodes** (kubelet, kube-proxy, containerd) запускают Pod'ы.
 2. **Pod** — минимальная единица. Один или несколько контейнеров, общая сеть и volumes.

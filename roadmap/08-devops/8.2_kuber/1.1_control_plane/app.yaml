@@ -1,0 +1,201 @@
+# 1. Namespace — изоляция
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app
+  labels:
+    env: production
+---
+
+# 2. ConfigMap — не секретные конфиги
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: app
+data:
+  APP_ENV: "production"
+  LOG_LEVEL: "info"
+  DB_HOST: "postgres.app.svc.cluster.local"
+  DB_PORT: "5432"
+  DB_NAME: "app"
+  REDIS_HOST: "redis.app.svc.cluster.local"
+  REDIS_PORT: "6379"
+---
+
+# 3. Secret — пароли (base64 или stringData)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  namespace: app
+type: Opaque
+stringData:
+  DB_USER: "app"
+  DB_PASSWORD: "superpuper"
+---
+
+# 4. Deployment — Go-сервис
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: app
+  labels:
+    app: app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # можно создать на 1 Pod больше
+      maxUnavailable: 0    # нельзя убирать старые, пока новые не готовы
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+        - name: app
+          image: my-app:1.0.0
+          ports:
+            - name: http
+              containerPort: 8080
+          # Все переменные из ConfigMap и Secret сразу в env.
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          # Requests — Scheduler использует для выбора ноды.
+          # Limits — потолок. Превышение памяти = OOMKilled.
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          # Liveness: если /health не отвечает — Pod перезапускается.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          # Readiness: если /ready не отвечает — Pod убирается из Service.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 2
+          # Startup: даёт время на старт, пока не прошёл — probes не проверяются.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 5
+---
+
+# 5. Service — стабильный доступ к Pod'ам
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: app
+spec:
+  type: ClusterIP
+  selector:
+    app: app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+---
+
+# 6. Ingress — вход снаружи
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app
+  namespace: app
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - api.example.com
+      secretName: app-tls
+---
+
+# 7. Job — миграции перед деплоем
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: app-migrate
+  namespace: app
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 300    # удалить через 5 минут
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: my-app:1.0.0
+          command: ["/app/migrate", "up"]
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secrets
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+
+# 8. HPA — автоскейл по CPU
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: app
+  namespace: app
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: app
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

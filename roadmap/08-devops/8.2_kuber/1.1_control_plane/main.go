@@ -1,7 +1,7 @@
 package main
 
 /*
-  УРОК 10.1.1: CONTROL PLANE VS WORKER NODES
+  УРОК 1.1: CONTROL PLANE VS WORKER NODES
   Kubernetes — это не «Docker, но сложнее». Это распределённая
   система управления контейнерами на кластере машин. Чтобы
   понимать K8s, нужно понимать, из чего он состоит: какие
@@ -160,7 +160,7 @@ package main
     • Secrets в etcd — base64, не шифрование. Для настоящей
       защиты — encryption at rest + external secrets manager.
 
-  ПОЧЕМУ НЕ МОЖНО ОБЩАТЬСЯ С ETCD НАПРЯМУЮ:
+  ПОЧЕМУ НЕЛЬЗЯ ОБЩАТЬСЯ С ETCD НАПРЯМУЮ:
     • Нет авторизации на уровне K8s.
     • Нет admission-валидации.
     • Нет версионирования API.
