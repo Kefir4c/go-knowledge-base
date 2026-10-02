@@ -112,8 +112,7 @@ package main
     • Если selector не совпадает с labels — Endpoints пустой.
 
   3. CLUSTERIP — ДЕФОЛТ
-  ClusterIP — тип по умолчанию. Даёт виртуальный IP внутри
-  кластера.
+  ClusterIP — тип по умолчанию. Даёт виртуальный IP внутри кластера.
 
   ПРИМЕР:
     apiVersion: v1
