@@ -1,0 +1,166 @@
+# 1. NAMESPACE
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+
+# 2. HTTPGET PROBES — основной сценарий для Go-сервиса
+#    Startup → Liveness → Readiness, всё через HTTP.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: demo
+  labels:
+    app: app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      # preStop даёт время на обновление Service endpoints.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - name: http
+              containerPort: 80
+          # STARTUP — даёт время на старт.
+          # Пока не пройден — liveness/readiness не проверяются.
+          # 30 попыток × 2 сек = до 60 секунд на старт.
+          startupProbe:
+            httpGet:
+              path: /
+              port: 80
+            failureThreshold: 30
+            periodSeconds: 2
+            timeoutSeconds: 1
+
+          # LIVENESS — жив ли. Падает → kubelet рестартит.
+          # НЕ проверяет зависимости. Только «процесс отвечает».
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # READINESS — готов ли принимать трафик.
+          # Падает → Pod убирается из Service (без рестарта).
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          lifecycle:
+            preStop:
+              exec:
+                command: ["bin/sh", "-c", "cleep"]
+---
+
+# 3. SERVICE — сюда попадают только Ready Pod'ы
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: demo
+spec:
+  type: ClusterIP
+  selector:
+    app: app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+
+# 4. EXEC PROBE — пример для БД (нет HTTP, есть бинарник)
+#    Проверяем готовность через команду внутри контейнера.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgres
+  namespace: demo
+  labels:
+    app: postgres
+spec:
+  containers:
+    - name: postgres
+      image: postgres:16-alpine
+      ports:
+        - containerPort: 5432
+      env:
+        - name: POSTGRES_USER
+          value: "app"
+        - name: POSTGRES_PASSWORD
+          value: "secret"
+        - name: POSTGRES_DB
+          value: "app"
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+      volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+
+      # LIVENESS через exec. Проверяет, что процесс Postgres жив.
+      livenessProbe:
+        exec:
+          command: ["pg_isready", "-U", "app"]
+        initialDelaySeconds: 15
+        periodSeconds: 10
+        failureThreshold: 5
+
+      # READINESS через exec. Проверяет, что Postgres готов принимать.
+      readinessProbe:
+        exec:
+          command: ["pg_isready", "-U", "app", "-d", "app"]
+        initialDelaySeconds: 5
+        periodSeconds: 5
+        failureThreshold: 3
+  volumes:
+    - name: data
+      emptyDir: {}
+---
+
+# 5. TCPSOCKET PROBE — простой чек порта
+#    Не проверяет, отвечает ли сервис, только что порт открыт.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis
+  namespace: demo
+  labels:
+    app: redis
+spec:
+  containers:
+    - name: redis
+      image: redis:7-alpine
+      ports:
+        - containerPort: 6379
+
+      livenessProbe:
+        tcpSocket:
+          port: 6379
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+
+      readinessProbe:
+        tcpSocket:
+          port: 6379
+        initialDelaySeconds: 2
+        periodSeconds: 5
+        failureThreshold: 3

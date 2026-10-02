@@ -29,7 +29,6 @@ package main
     13. Финальные выводы
 
   1. ЗАЧЕМ НУЖНЫ PROBES
-
   Процесс может быть живым, но не работающим:
     • HTTP-сервер завис на deadlock. Порт открыт, запросы
       висят.
@@ -499,7 +498,7 @@ package main
   5.  Три типа: httpGet, tcpSocket, exec.
   6.  Параметры: initialDelay, period, timeout,
       successThreshold, failureThreshold.
-  7.  timeout < period. failureThreshold >= 3.
+	  7.  timeout < period. failureThreshold >= 3.
   8.  При shutdown: ready=false, потом graceful shutdown.
       preStop hook даёт время на обновление Endpoints.
   9.  В Go: /health — простой ok, /ready — проверка БД + atomic-флаг.

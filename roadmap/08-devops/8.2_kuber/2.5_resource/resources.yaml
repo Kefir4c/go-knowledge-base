@@ -1,0 +1,126 @@
+# 1. NAMESPACE
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+
+# 2. LIMITRANGE — defaults для Pod'ов без resources
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default
+  namespace: demo
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "1Gi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "512Mi"
+---
+
+# 3. GUARANTEED — requests == limits (самый защищённый)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qos-guaranteed
+  namespace: demo
+  labels:
+    gos: guaranteed
+spec:
+  containers:
+    - name: app
+      image: nginx:1.27-alpine
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "128Mi"
+        limits:
+          cpu: "200m"
+          memory: "128Mi"
+---
+
+# 4. BURSTABLE — requests < limits (большинство сервисов)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qos-burstable
+  namespace: demo
+  labels:
+    qos: burstable
+spec:
+  containers:
+    - name: app
+      image: nginx:1.27-alpine
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+---
+
+# 5. BESTEFFORT — без resources (убивают первыми)
+#    LimitRange применит defaults, чтобы не было совсем плохо.
+#    Если убрать LimitRange — будет чистый BestEffort.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qos-besteffort
+  namespace: demo
+  labels:
+    qos: besteffort
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "while true; do sleep 10; done"]
+---
+
+# 6. OOMKILLED — маленький лимит, процесс съедает больше
+#    Busybox попытается выделить 200 MiB памяти при limit 64Mi.
+#    Результат: OOMKilled, RESTARTS растёт.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: oom-demo
+  namespace: demo
+spec:
+  containers:
+    - name: stress
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          echo "starting memory hog..."
+          dd if=/dev/zero of=/tmp/big bs=1M count=200
+          echo "done — should never print if OOM"
+      resources:
+        requests:
+          memory: "64Mi"
+        limits:
+          memory: "64Mi"      # маленький лимит — будет OOM
+---
+
+# 7. CPU THROTTLING — маленький CPU limit, бесконечный цикл
+#    Pod постоянно упрётся в 100m CPU. Throttling.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cpu-demo
+  namespace: demo
+spec:
+  containers:
+    - name: busy
+      image: busybox:1.36
+      command: ["sh", "-c", "while true; do :; done"]
+      resources:
+        requests:
+          cpu: "50m"
+        limits:
+          cpu: "100m"         # маленький лимит — throttling
