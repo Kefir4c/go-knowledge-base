@@ -1,0 +1,187 @@
+# 1. NAMESPACE
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+
+# 2. CONFIGMAP: простые пары + многострочный файл
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namescape: demo
+  labels:
+    app: app
+data:
+  # Простые пары для env.   
+  APP_ENV: "production"
+  LOG_LEVEL: "info"
+  DB_HOST: "postgres.demo.svc.cluster.local"
+  DB_PORT: "5432"
+
+# Многострочный конфиг для volume.
+app.yaml: |
+  server:
+    port: 8080
+    read_timeout: 15s
+    write_timeout: 30s
+  log:
+    livel: info
+    format: json
+  features:
+    new_ui: true
+    beta_api: false
+---
+
+# 3. CONFIGMAP: immutable (нельзя изменить)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: static-config
+  namespace: demo
+immutable: true
+data:
+  BUILD_VERSION: "1.0.0"
+  BUILD_COMMIT: "abc123"
+---
+
+# 4. POD: ConfigMap через envFrom (все ключи → env)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: via-envfrom
+  namespace: demo
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== env ==="
+      env | grep -E "APP_ENV|LOG_LEVEL|DB_HOST|DB_PORT" | sort
+      echo "=== sleeping ==="
+      sleep 3600
+    envFrom:
+    - configMapRef:
+      name: app-config
+    resourses:
+      request:
+        cpu: "50m"
+        memory: "32Mi"
+      limits:
+        memory: "128Mi"   
+---           
+
+# 5. POD: ConfigMap через env (выборочно)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: via-env
+  namespace: demo
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      echo "APP_ENV=$APP_ENV"
+      echo "LOG_LEVEL=$LOG_LEVEL"
+      sleep 3600
+    env:
+    - name: APP_ENV
+      valueFrom:
+        configMapKeyRef:
+          name: app-config
+          key: APP_ENV
+    - name: LOG_LEVEL
+      valueFrom:
+        configMapKeyRef:
+          name: app-config
+          key: LOG_LEVEL
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "32Mi"
+      limits:
+        memory: "128Mi"  
+---
+
+# 6. POD: ConfigMap через volume (все ключи → файлы)
+apiVersion: v1
+kind: Pod
+matadata: 
+  name: via-volume
+  namespace: demo
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      echo "=== files in /etc/app ==="
+      ls -la /etc/app/
+      echo "=== app.yaml ==="
+      cat /etc/app/app.yaml
+      echo "=== APP_ENV ==="
+      cat /etc/app/APP_ENV
+      echo "=== sleeping ==="
+      sleep 3600
+    volumeMounts:
+    - name: config
+      mountPath: /etc/app
+      readOnly: true
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "32Mi"
+  volumes:
+  - name: config
+    configMap:
+      name: app-config
+---
+
+# 7. POD: ConfigMap через volume с выборкой ключей
+#    Только app.yaml и LOG_LEVEL. С переименованием.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: via-volume-items
+  namespace: demo
+spec:
+  containers:
+  - name: app
+    image: busybox:1.36
+    command:
+    - sh
+    - -c
+    - |
+      ls -la /etc/app/
+      echo "=== config.yaml ==="
+      cat /etc/app/config.yaml
+      echo "=== log_level.txt ==="
+      cat /etc/app/log_level.txt
+      sleep 3600
+    volumeMounts:
+    - name: config
+      mountPath: /etc/app
+      readOnly: true
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "32Mi"
+  volumes:
+  - name: config
+    configMap:
+      name: app-config
+      items:
+      - key: app.yaml
+        path: config.yaml
+      - key: LOG_LEVEL
+        path: log_level.txt
