@@ -161,7 +161,6 @@
 - Метрики: metrics-server, Prometheus.
 - Трейсинг: Jaeger, Tempo.
 - Events: `kubectl get events`, `kubectl describe`.
-- Типовые проблемы: **CrashLoopBackOff**, **ImagePullBackOff**, **OOMKilled**, **Pending**.
 
 ## 🔵 БЛОК 6: ДИАГНОСТИКА
 ### 6.1. Типовые проблемы
