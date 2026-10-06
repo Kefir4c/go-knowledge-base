@@ -34,8 +34,7 @@ package main
   систему. Каждая нода — это физический сервер или VM.
 
   В кластере есть два типа нод:
-    CONTROL PLANE — управляет кластером. Не запускает твои
-                    приложения.
+    CONTROL PLANE — управляет кластером. Не запускает твои приложения.
     WORKER NODES  — запускают твои приложения (Pod'ы).
 
   МИНИМАЛЬНЫЙ КЛАСТЕР:
@@ -323,8 +322,7 @@ package main
     kubelet сам выполняет probes. Каждые N секунд делает
     HTTP-запрос или exec в контейнер.
 
-    Если livenessProbe падает N раз — kubelet перезапускает
-    контейнер.
+    Если livenessProbe падает N раз — kubelet перезапускает контейнер.
     Если readinessProbe падает — kubelet помечает Pod
     NotReady. Service исключает его из endpoints.
 
@@ -520,7 +518,6 @@ package main
   и понимать.
 
   ЧТО НАПИСАНО НА GO:
-
     • API Server.
     • kubelet.
     • Scheduler.

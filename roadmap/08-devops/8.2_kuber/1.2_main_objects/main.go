@@ -78,12 +78,10 @@ package main
 
   ПОДХОДЫ К ЖИЗНЕННОМУ ЦИКЛУ:
     Init-контейнеры — запускаются ДО основного, по порядку.
-      Используются для: дождаться БД, применить миграции,
-      подготовить файлы.
+    Используются для: дождаться БД, применить миграции, подготовить файлы.
 
     Обычные контейнеры — работают параллельно.
-    Ephemeral-контейнеры — временные, для отладки работающего
-    Pod'а (kubectl debug).
+    Ephemeral-контейнеры — временные, для отладки работающего Pod'а (kubectl debug).
 
   СТАТУСЫ POD:
     Pending     — создан, но ещё не назначен ноде.
@@ -186,8 +184,7 @@ package main
       StatefulSet:   postgres-0, postgres-1, postgres-2
 
     СТАБИЛЬНЫЕ VOLUMES:
-      Каждый Pod получает свой PVC. При перезапуске —
-      тот же volume.
+      Каждый Pod получает свой PVC. При перезапуске — тот же volume.
 
     ПОРЯДОК ЗАПУСКА:
       StatefulSet: 0 → 1 → 2 (по одному).
@@ -441,8 +438,7 @@ package main
 
   ЧТО ВАЖНО:
     Ingress = HTTP-роутинг по хостам и путям. Нужен
-    Ingress Controller. TLS через Secret. Один LB на
-    весь кластер.
+    Ingress Controller. TLS через Secret. Один LB на весь кластер.
 
   8. CONFIGMAP
   ConfigMap — конфиги отдельно от образа.
@@ -636,11 +632,8 @@ package main
 
   ИЕРАРХИЯ WORKLOADS:
     Deployment → ReplicaSet → Pod → Containers
-
     StatefulSet → Pod → Containers
-
     DaemonSet → Pod (по одному на ноду)
-
     Job → Pod → Containers
 
   ВЛАДЕЛЬЦЫ (ownerReferences):
