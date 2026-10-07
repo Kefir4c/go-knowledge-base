@@ -30,7 +30,7 @@ spec:
         ports:
         - name: http
           containerPort: 80
-        recorces:
+        resources:
           requests:
             cpu: "50m"
             memory: "64Mi"

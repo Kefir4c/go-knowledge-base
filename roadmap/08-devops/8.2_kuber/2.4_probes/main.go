@@ -30,8 +30,7 @@ package main
 
   1. ЗАЧЕМ НУЖНЫ PROBES
   Процесс может быть живым, но не работающим:
-    • HTTP-сервер завис на deadlock. Порт открыт, запросы
-      висят.
+    • HTTP-сервер завис на deadlock. Порт открыт, запросы висят.
     • Приложение потеряло соединение с БД, но процесс жив.
     • Бесконечный цикл съел CPU, сервис не отвечает.
     • Приложение стартует 60 секунд, за это время K8s
@@ -120,8 +119,7 @@ package main
   startupProbe проверяет: «Pod уже стартовал?».
 
   ЧТО ДЕЛАЕТ:
-    Пока startupProbe не пройден — liveness и readiness
-    НЕ ПРОВЕРЯЮТСЯ.
+    Пока startupProbe не пройден — liveness и readiness НЕ ПРОВЕРЯЮТСЯ.
     Даёт приложению время на старт.
 
   КОГДА ИСПОЛЬЗУЕТСЯ:
@@ -139,13 +137,11 @@ package main
       periodSeconds: 2
 
   Что значит: приложение может стартовать до 60 секунд
-  (30 × 2). За это время kubelet не будет рестартить его
-  из-за liveness.
+  (30 × 2). За это время kubelet не будет рестартить его из-за liveness.
 
   ПОЧЕМУ НЕ ПРОСТО БОЛЬШОЙ initialDelaySeconds:
     Если поставить initialDelaySeconds: 60 на liveness —
-    все рестарты будут ждать 60 секунд. Даже если приложение
-    стартует за 5.
+    все рестарты будут ждать 60 секунд. Даже если приложение стартует за 5.
     startupProbe решает: ждём ровно столько, сколько нужно.
     Как только стартовал — сразу переходим к обычным probes.
 
@@ -218,8 +214,7 @@ package main
     Иначе проверки будут накладываться.
 
   successThreshold (дефолт 1):
-    Сколько успехов подряд для перехода в healthy.
-    Обычно 1.
+    Сколько успехов подряд для перехода в healthy. Обычно 1.
 
   failureThreshold (дефолт 3):
     Сколько провалов подряд для перехода в unhealthy.
@@ -291,10 +286,6 @@ package main
     Каскадные рестарты.
 
   ПРАВИЛЬНО:
-    livenessProbe:
-      httpGet:
-        path: /health    # не проверяет БД
-        port: 8080
 
     readinessProbe:
       httpGet:
@@ -373,8 +364,7 @@ package main
     • /health — просто ok, не трогает БД.
     • /ready — ping БД + atomic-флаг.
     • ready=false при SIGTERM — сразу убираем из Service.
-    • Graceful shutdown с таймаутом меньше
-      terminationGracePeriodSeconds.
+    • Graceful shutdown с таймаутом меньше terminationGracePeriodSeconds.
 
   10. TERMINATIONGRACEPERIOD И READINESS
 
@@ -498,7 +488,7 @@ package main
   5.  Три типа: httpGet, tcpSocket, exec.
   6.  Параметры: initialDelay, period, timeout,
       successThreshold, failureThreshold.
-	  7.  timeout < period. failureThreshold >= 3.
+7.    timeout < period. failureThreshold >= 3.
   8.  При shutdown: ready=false, потом graceful shutdown.
       preStop hook даёт время на обновление Endpoints.
   9.  В Go: /health — простой ok, /ready — проверка БД + atomic-флаг.
