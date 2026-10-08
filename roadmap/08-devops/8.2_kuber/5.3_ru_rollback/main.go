@@ -59,7 +59,7 @@ package main
     ШАГ 1:kubectl обновляет Deployment. API Server сохраняет новую версию template в etcd.
     ШАГ 2:Deployment Controller видит изменение. Создаёт НОВЫЙ ReplicaSet для версии v2.0.0. Старый RS (v1.0.0) пока с replicas: 3.
     ШАГ 3:Новый RS начинает создавать Pod'ы. С учётом maxSurge создаётся n новый Pod (v2.0.0). Pending → ContainerCreating → Running.
-    ШАГ 4:Новый Pod проходит startupProbe и readinessProbe. Только после Ready Service Controller добавляет его в Endpoints.
+    ШАГ 4:Новый Pod проходит startupProbe и readinessProbe. Только после Ready, Service Controller добавляет его в Endpoints.
     ШАГ 5:Deployment уменьшает старый RS на 1. Один старый Pod получает SIGTERM, убирается из Endpoints, завершается (graceful shutdown).
     ШАГ 6:Повтор шагов 3-5, пока все Pod'ы не обновятся. Старый RS уменьшается до 0. Новый RS достигает replicas: 3.
 
@@ -450,7 +450,7 @@ package main
         path: /health
         port: 8080
       failureThreshold: 30
-      periodSeconds: 5
+      periodSeconds: 3
 
   GRACEFUL SHUTDOWN В GO:
     var ready atomic.Bool

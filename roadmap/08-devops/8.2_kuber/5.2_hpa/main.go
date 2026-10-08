@@ -273,15 +273,6 @@ package main
           averageUtilization: 80
 
   HPA посчитает desired для каждой метрики и выберет МАКСИМУМ. Так безопаснее — не будет ситуации, когда CPU в норме, а память кончается.
-  HPA С КАСТОМНОЙ МЕТРИКОЙ:
-    metrics:
-    - type: Pods
-      pods:
-        metric:
-          name: http_requests_per_second
-        target:
-          type: AverageValue
-          averageValue: "100"
 
   Типы target:
     Utilization — процент от requests.
@@ -310,7 +301,7 @@ package main
 
   ВАЖНО: HPA не работает, если utilization < 10% или > 100% (по умолчанию tolerance 0.1). Это защита от флаппинга.
   TOLERANCE: HPA не скейлит, если текущее значение близко к целевому. По умолчанию tolerance = 0.1 (10%).
-  Если target = 70%, HPA не будет реагировать, пока utilization не выйдет за пределы 63-77%.
+  Если target = 70%, HPA не будет реагировать, пока utilization не выйдет за пределы 60-80%.
 
   9. MINREPLICAS, MAXREPLICAS — ГРАНИЦЫ
   MINREPLICAS:
@@ -532,9 +523,7 @@ package main
           averageValue: "1000"
 
   ЧТО ЭТО ЗНАЧИТ: Держать 1000 сообщений на Pod. Если очередь растёт — HPA добавляет Pod'ов.
-
   КОГДА ИСПОЛЬЗОВАТЬ: Worker'ы, которые читают из очереди, event-driven архитектура, batch-обработка.
-
   ВАЖНО: External Metrics API должен быть настроен. Обычно через Prometheus Adapter или KEDA.
 
   KEDA:

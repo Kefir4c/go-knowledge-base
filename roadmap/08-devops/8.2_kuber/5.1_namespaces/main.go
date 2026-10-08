@@ -42,15 +42,14 @@ package main
   РЕШЕНИЕ: Namespace.
     Namespace — это логическая изоляция внутри одного кластера.
     Не физическая. Все Pod'ы на тех же нодах, но:
-      • Свои имена (можно создать app в namespace A и app в B).
+      • Свои имена (можно создать app в namespace A и app в namespace B).
       • Свои RBAC (разработчик A не видит namespace B).
-      • Свои квоты (команда A ограничена 10 CPU, команда B — 20).
+      • Свои квоты (команда A ограничена 10 CPU, команда B — 20 CPU).
       • Свои Secret, ConfigMap, Service.
 
   ВАЖНО:
     Namespace — это НЕ физическая изоляция. Если хочется
-    физической — отдельные кластеры. Namespace — для организации
-    и мягкой изоляции.
+    физической — отдельные кластеры. Namespace — для организации и мягкой изоляции.
 
   КОГДА ИСПОЛЬЗУЮТ:
     • Окружения: dev, staging, prod в одном кластере.
@@ -92,8 +91,7 @@ package main
     • kubectl get pvc -n demo — PVC конкретного namespace.
 
   ЗАЧЕМ РАЗДЕЛЕНИЕ:
-    • Node — физическая инфраструктура. Не может принадлежать
-      одному namespace.
+    • Node — физическая инфраструктура. Не может принадлежать одному namespace.
     • PV — общий ресурс. Много PVC из разных namespace могут
       ссылаться на один PV (обычно не могут, но концептуально).
     • ClusterRole — права на уровне кластера.
@@ -104,7 +102,7 @@ package main
   DEFAULT:
     Твой namespace по умолчанию. Если не указывать `-n`, все
     команды работают здесь.
-    Плохо: засоряешь default. Хорошо: создать свой.
+    Плохо -> засоряешь default. Хорошо -> создать свой.
 
   KUBE-SYSTEM:
     Системные компоненты K8s: CoreDNS, kube-proxy, metrics-server.
@@ -162,8 +160,8 @@ package main
 
     Полезно для RBAC и политик:
       labels:
+		env: production
         team: backend
-        env: production
         cost-center: cc-1234
 
     По labels можно:
@@ -242,8 +240,7 @@ package main
     Из app-backend:
       ping postgres.app-data
 
-    Работает. K8s не блокирует трафик между namespace по
-    умолчанию.
+    Работает. K8s не блокирует трафик между namespace по умолчанию.
 
   КАК ОГРАНИЧИТЬ:
     NetworkPolicy. По умолчанию — все со всеми.
@@ -254,7 +251,7 @@ package main
       1. Использовать полное DNS-имя:
          service-b.namespace-b.svc.cluster.local.
       2. Настроить NetworkPolicy, чтобы разрешить трафик.
-      3. Service в B должен существовать.
+      3. Service в "B" должен существовать.
 
   ПРИМЕР С GO:
     // Обращение из namespace backend к postgres в namespace data.
@@ -311,8 +308,7 @@ package main
 
   ВАЖНО:
     Если ResourceQuota установлена — все Pod'ы в namespace
-    должны указывать requests и limits. Иначе K8s не может
-    посчитать сумму.
+    должны указывать requests и limits. Иначе K8s не может посчитать сумму.
     Иначе ошибка: "must specify limits.cpu".
 
   ОБХОД ЧЕРЕЗ LIMITRANGE:
@@ -409,8 +405,7 @@ package main
       resources: ["pods"]
       verbs: ["get", "list"]
 
-    ClusterRoleBinding — привязка к пользователю для всех
-    namespace.
+    ClusterRoleBinding — привязка к пользователю для всех namespace.
 
   ПРАВИЛО:
     Для команды на своём namespace — Role + RoleBinding.
@@ -450,9 +445,7 @@ package main
 
   12. NETWORKPOLICY МЕЖДУ NAMESPACE
   По умолчанию — все Pod'ы в кластере могут общаться со всеми.
-
-  NetworkPolicy ограничивает трафик. Работает на уровне
-  namespace.
+  NetworkPolicy ограничивает трафик. Работает на уровне namespace.
 
   DEFAULT DENY В NAMESPACE:
     apiVersion: networking.k8s.io/v1
