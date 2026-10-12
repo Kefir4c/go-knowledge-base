@@ -178,3 +178,108 @@ func topKFrequent(nums []int, k int) []int {
 	}
 	return result
 }
+
+//Product of Array Except Self
+/*
+Given an integer array nums, return an array answer such that answer[i]
+is equal to the product of all the elements of nums except nums[i].
+The product of any prefix or suffix of nums is guaranteed to fit in a 32-bit integer.
+You must write an algorithm that runs in O(n) time and without using the division operation.
+
+Example 1:
+Input: nums = [1,2,3,4]
+Output: [24,12,8,6]
+
+Example 2:
+Input: nums = [-1,1,0,-3,3]
+Output: [0,0,9,0,0]
+
+*/
+func productExceptSelf(nums []int) []int {
+	n := len(nums)
+	result := make([]int, n)
+	result[0] = 1
+	for i := 1; i < n; i++ {
+		result[i] = result[i-1] * nums[i-1]
+	}
+
+	right := 1
+	for i := n - 1; i >= 0; i-- {
+		result[i] *= right
+		right *= nums[i]
+	}
+	return result
+}
+
+//Subarray Sum Equals K
+/*
+Given an array of integers and an integer , return the total
+number of subarrays whose sum equals to .nums k k
+A subarray is a contiguous non-empty sequence of elements within an array.
+
+Example 1:
+Input: nums = [1,1,1], k = 2
+Output: 2
+
+Example 2:
+Input: nums = [1,2,3], k = 3
+Output: 2
+*/
+func subarraySum(nums []int, k int) int {
+	count := 0
+	prefix := 0
+	seen := map[int]int{0: 1}
+
+	for _, n := range nums {
+		prefix += n
+		count += seen[prefix-k]
+		seen[prefix]++
+	}
+	return count
+}
+
+//Longest Consecutive Sequence
+/*
+Given an unsorted array of integers nums, return the length of
+the longest consecutive elements sequence.
+You must write an algorithm that runs in O(n) time.
+
+Example 1:
+Input: nums = [100,4,200,1,3,2]
+Output: 4
+Explanation: The longest consecutive elements sequence is [1, 2, 3, 4]. Therefore its length is 4.
+
+Example 2:
+Input: nums = [0,3,7,2,5,8,4,6,0,1]
+Output: 9
+
+Example 3:
+Input: nums = [1,0,1,2]
+Output: 3
+*/
+func longestConsecutive(nums []int) int {
+	if len(nums) == 0 {
+		return 0
+	}
+
+	set := make(map[int]bool)
+	for _, num := range nums {
+		set[num] = true
+	}
+
+	longest := 0
+
+	for num := range set {
+		if !set[num-1] {
+			length := 1
+			for set[num+length] {
+				length++
+			}
+			if length > longest {
+				longest = length
+			}
+		}
+	}
+
+	return longest
+}
