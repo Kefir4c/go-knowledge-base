@@ -280,6 +280,180 @@ func longestConsecutive(nums []int) int {
 			}
 		}
 	}
-
 	return longest
+}
+
+// Majority Element
+/*
+Given an array nums of size n, return the majority element.
+The majority element is the element that appears more than ⌊n / 2⌋ times.
+You may assume that the majority element always exists in the array.
+
+Example 1:
+Input: nums = [3,2,3]
+Output: 3
+
+Example 2:
+Input: nums = [2,2,1,1,1,2,2]
+Output: 2
+*/
+func majorityElement(nums []int) int {
+	count := make(map[int]int)
+	for _, n := range nums {
+		count[n]++
+	}
+
+	for num, freq := range count {
+		if freq > len(nums)/2 {
+			return num
+		}
+	}
+	return 0
+}
+
+// Majority Element II
+/*
+Given an integer array of size n, find all elements that appear more than ⌊n / 3⌋ times.
+
+Example 1:
+Input: nums = [3,2,3]
+Output: [3]
+
+Example 2:
+Input: nums = [1]
+Output: [1]
+
+Example 3:
+Input: nums = [1,2]
+Output: [1,2]
+*/
+func majorityElement(nums []int) []int {
+	res := make([]int, 0, len(nums))
+	count := make(map[int]int)
+	for _, n := range nums {
+		count[n]++
+	}
+
+	for num, freq := range count {
+		if freq > len(nums)/3 {
+			res = append(res, num)
+		}
+	}
+	return res
+}
+
+//3Sum
+/*
+Given an integer array nums, return all the triplets [nums[i], nums[j], nums[k]] such
+that i != j, i != k, and j != k, and nums[i] + nums[j] + nums[k] == 0.
+Notice that the solution set must not contain duplicate triplets.
+
+Example 1:
+Input: nums = [-1,0,1,2,-1,-4]
+Output: [[-1,-1,2],[-1,0,1]]
+Explanation:
+nums[0] + nums[1] + nums[2] = (-1) + 0 + 1 = 0.
+nums[1] + nums[2] + nums[4] = 0 + 1 + (-1) = 0.
+nums[0] + nums[3] + nums[4] = (-1) + 2 + (-1) = 0.
+The distinct triplets are [-1,0,1] and [-1,-1,2].
+Notice that the order of the output and the order of the triplets does not matter.
+
+Example 2:
+Input: nums = [0,1,1]
+Output: []
+Explanation: The only possible triplet does not sum up to 0.
+
+Example 3:
+Input: nums = [0,0,0]
+Output: [[0,0,0]]
+Explanation: The only possible triplet sums up to 0.
+*/
+func threeSum(nums []int) [][]int {
+	n := len(nums)
+	sort.Ints(nums)
+	result := [][]int{}
+
+	for i := 0; i < n-2; i++ {
+		if i > 0 && nums[i] == nums[i-1] {
+			continue
+		}
+		if nums[i] > 0 {
+			break
+		}
+
+		left := i + 1
+		right := n - 1
+
+		for left < right {
+			sum := nums[i] + nums[left] + nums[right]
+
+			if sum == 0 {
+				result = append(result, []int{nums[i], nums[left], nums[right]})
+
+				for left < right && nums[left] == nums[left+1] {
+					left++
+				}
+				for left < right && nums[right] == nums[right-1] {
+					right--
+				}
+
+				left++
+				right--
+			} else if sum < 0 {
+				left++
+			} else {
+				right--
+			}
+		}
+	}
+	return result
+}
+
+//Find All Anagrams in a String
+/*
+Given two strings s and p, return an array of all the start indices of p's anagrams in s. You may return the answer in any order.
+
+Example 1:
+Input: s = "cbaebabacd", p = "abc"
+Output: [0,6]
+Explanation:
+The substring with start index = 0 is "cba", which is an anagram of "abc".
+The substring with start index = 6 is "bac", which is an anagram of "abc".
+
+Example 2:
+Input: s = "abab", p = "ab"
+Output: [0,1,2]
+Explanation:
+The substring with start index = 0 is "ab", which is an anagram of "ab".
+The substring with start index = 1 is "ba", which is an anagram of "ab".
+The substring with start index = 2 is "ab", which is an anagram of "ab".
+*/
+func findAnagrams(s string, p string) []int {
+	result := []int{}
+	pl, sl := len(p), len(s)
+
+	if sl < pl {
+		return result
+	}
+
+	var pFreq, sFreq [26]int
+	for i := 0; i < pl; i++ {
+		pFreq[p[i]-'a']++
+		sFreq[s[i]-'a']++
+	}
+
+	if pFreq == sFreq {
+		result = append(result, 0)
+	}
+
+	for right := pl; right < sl; right++ {
+		left := right - pl
+		sFreq[s[left]-'a']--
+		sFreq[s[right]-'a']++
+
+		if pFreq == sFreq {
+			result = append(result, left+1)
+		}
+	}
+	return result
 }
