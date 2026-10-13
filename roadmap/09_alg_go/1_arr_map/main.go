@@ -457,3 +457,173 @@ func findAnagrams(s string, p string) []int {
 	}
 	return result
 }
+
+//Continuous Subarray Sum
+/*
+Given an integer array nums and an integer k,
+return true if nums has a good subarray or false otherwise.
+A good subarray is a subarray where:
+its length is at least two, and
+the sum of the elements of the subarray is a multiple of k.
+
+Note that:
+A subarray is a contiguous part of the array.
+An integer x is a multiple of k if there exists an integer n such that x = n * k. 0 is always a multiple of k.
+
+Example 1:
+Input: nums = [23,2,4,6,7], k = 6
+Output: true
+Explanation: [2, 4] is a continuous subarray of size 2 whose elements sum up to 6.
+
+Example 2:
+Input: nums = [23,2,6,4,7], k = 6
+Output: true
+Explanation: [23, 2, 6, 4, 7] is an continuous
+subarray of size 5 whose elements sum up to 42.
+42 is a multiple of 6 because 42 = 7 * 6 and 7 is an integer.
+
+Example 3:
+Input: nums = [23,2,6,4,7], k = 13
+Output: false
+*/
+func checkSubarraySum(nums []int, k int) bool {
+	seen := map[int]int{0: -1} // ← -1, не 1
+	prefix := 0
+
+	for i, num := range nums {
+		prefix += num
+		rem := prefix % k
+
+		if prevIdx, ok := seen[rem]; ok {
+			if i-prevIdx >= 2 {
+				return true
+			}
+		} else {
+			seen[rem] = i
+		}
+	}
+	return false
+}
+
+//Contiguous Array
+/*
+Given a binary array nums, return the maximum length of a
+contiguous subarray with an equal number of 0 and 1.
+
+Example 1:
+Input: nums = [0,1]
+Output: 2
+Explanation: [0, 1] is the longest contiguous subarray with an equal number of 0 and 1.
+
+Example 2:
+Input: nums = [0,1,0]
+Output: 2
+Explanation: [0, 1] (or [1, 0]) is a longest contiguous subarray with equal number of 0 and 1.
+
+Example 3:
+Input: nums = [0,1,1,1,1,1,0,0,0]
+Output: 6
+Explanation: [1,1,1,0,0,0] is the longest contiguous subarray with equal number of 0 and 1.
+*/
+func findMaxLength(nums []int) int {
+	seen := map[int]int{0: -1} // prefix → первый индекс
+	prefix := 0
+	maxLen := 0
+
+	for i, num := range nums {
+		if num == 0 {
+			prefix--
+		} else {
+			prefix++
+		}
+
+		if prevIdx, ok := seen[prefix]; ok {
+			length := i - prevIdx
+			if length > maxLen {
+				maxLen = length
+			}
+		} else {
+			seen[prefix] = i // ← ТОЛЬКО первый индекс
+		}
+	}
+
+	return maxLen
+}
+
+//Boats to Save People
+/*
+You are given an array people where people[i] is the weight of the ith person,
+and an infinite number of boats where each boat can carry a maximum weight of limit.
+Each boat carries at most two people at the same time, provided the sum of the
+ weight of those people is at most limit.
+Return the minimum number of boats to carry every given person.
+
+Example 1:
+Input: people = [1,2], limit = 3
+Output: 1
+Explanation: 1 boat (1, 2)
+
+Example 2:
+Input: people = [3,2,2,1], limit = 3
+Output: 3
+Explanation: 3 boats (1, 2), (2) and (3)
+
+Example 3:
+Input: people = [3,5,3,4], limit = 5
+Output: 4
+Explanation: 4 boats (3), (3), (4), (5)
+*/
+func numRescueBoats(people []int, limit int) int {
+	sort.Ints(people)
+	left := 0
+	right := len(people) - 1
+	boat := 0
+
+	if left <= right {
+		if people[left]+people[right] <= limit {
+			left++
+		}
+		right--
+		boat++
+	}
+	return boat
+}
+
+//Longest Substring Without Repeating Characters
+/*
+Given a string , find the length of the longests substring without duplicate characters.
+
+Example 1:
+Input: s = "abcabcbb"
+Output: 3
+Explanation: The answer is "abc", with the length of 3. Note that "bca" and "cab" are also correct answers.
+
+Example 2:
+Input: s = "bbbbb"
+Output: 1
+Explanation: The answer is "b", with the length of 1.
+
+Example 3:
+Input: s = "pwwkew"
+Output: 3
+Explanation: The answer is "wke", with the length of 3.
+Notice that the answer must be a substring, "pwke" is a subsequence and not a substring.
+*/
+func lengthOfLongestSubstring(s string) int {
+	seen := make(map[byte]bool)
+	left := 0
+	maxLen := 0
+
+	for right := 0; right < len(s); right++ {
+		if seen[s[right]] {
+			delete(seen, s[left])
+			left++
+		}
+		seen[s[right]] = true
+
+		if right-left+1 > maxLen {
+			maxLen = right - left + 1
+		}
+	}
+	return maxLen
+}
