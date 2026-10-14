@@ -241,3 +241,161 @@ func numSubarrayProductLessThanK(nums []int, k int) int {
 	}
 	return count
 }
+
+//Partition Labels
+/*
+You are given a string s. We want to partition the string into as
+many parts as possible so that each letter appears in at most one part. For example,
+the string "ababcc" can be partitioned into ["abab", "cc"],
+but partitions such as ["aba", "bcc"] or ["ab", "ab", "cc"] are invalid.
+
+Note that the partition is done so that after concatenating all
+the parts in order, the resultant string should be s.
+Return a list of integers representing the size of these parts.
+
+
+
+Example 1:
+Input: s = "ababcbacadefegdehijhklij"
+Output: [9,7,8]
+Explanation:
+The partition is "ababcbaca", "defegde", "hijhklij".
+This is a partition so that each letter appears in at most one part.
+A partition like "ababcbacadefegde", "hijhklij" is incorrect,
+because it splits s into less parts.
+
+Example 2:
+Input: s = "eccbbbbdec"
+Output: [10]
+*/
+func partitionLabels(s string) []int {
+	last := [26]int{}
+	for i := range s {
+		last[s[i]-'a'] = i
+	}
+
+	res := []int{}
+	start, end := 0, 0
+
+	for i := range s {
+		if last[s[i]-'a'] > end {
+			end = last[s[i]-'a']
+		}
+		if i == end {
+			res = append(res, end-start+1)
+			start = i + 1
+		}
+	}
+	return res
+}
+
+//Minimum Window Substring
+/*
+Given two strings and of lengths and respectively,
+return the minimum windowstmn substring of such that every
+character in (including duplicates) is included in the window.
+If there is no such substring, return the empty string .st""
+The testcases will be generated such that the answer is unique.
+
+Example 1:
+Input: s = "ADOBECODEBANC", t = "ABC"
+Output: "BANC"
+Explanation: The minimum window substring "BANC" includes 'A', 'B', and 'C' from string t.
+
+Example 2:
+Input: s = "a", t = "a"
+Output: "a"
+Explanation: The entire string s is the minimum window.
+
+Example 3:
+Input: s = "a", t = "aa"
+Output: ""
+Explanation: Both 'a's from t must be included in the window.
+Since the largest window of s only has one 'a', return empty string.
+*/
+func minWindow(s string, t string) string {
+	if len(s) < len(t) {
+		return ""
+	}
+
+	need := make(map[byte]int)
+	for i := 0; i < len(t); i++ {
+		need[t[i]]++
+	}
+
+	window := make(map[byte]int)
+	left := 0
+	have := 0
+	required := len(need)
+
+	minLen := len(s) + 1
+	minStart := 0
+
+	for right := 0; right < len(s); right++ {
+		ch := s[right]
+		window[ch]++
+
+		if need[ch] > 0 && window[ch] == need[ch] {
+			have++
+		}
+
+		for have == required {
+			if right-left+1 < minLen {
+				minLen = right - left + 1
+				minStart = left
+			}
+			leftCh := s[left]
+			window[leftCh]--
+
+			if need[leftCh] > 0 && window[leftCh] < need[leftCh] {
+				have--
+			}
+			left++
+		}
+	}
+	if minLen > len(s) {
+		return ""
+	}
+	return s[minStart : minStart+minLen]
+}
+
+//Minimum Size Subarray Sum
+/*
+Given an array of positive integers nums and a positive integer target,
+return the minimal length of a subarray whose sum is greater than or
+equal to target. If there is no such subarray, return 0 instead.
+
+Example 1:
+Input: target = 7, nums = [2,3,1,2,4,3]
+Output: 2
+Explanation: The subarray [4,3] has the minimal length under the problem constraint.
+
+Example 2:
+Input: target = 4, nums = [1,4,4]
+Output: 1
+
+Example 3:
+Input: target = 11, nums = [1,1,1,1,1,1,1,1]
+Output: 0
+*/
+func minSubArrayLen(target int, nums []int) int {
+	lef, sum := 0, 0
+	minLen := len(nums) + 1
+
+	for rig := 0; rig < len(nums); rig++ {
+		sum += nums[rig]
+
+		for sum >= target {
+			if rig-lef+1 < minLen {
+				minLen = rig - lef + 1
+			}
+
+			sum -= nums[lef]
+			lef++
+		}
+	}
+	if minLen > len(nums) {
+		return 0
+	}
+	return minLen
+}
