@@ -615,7 +615,7 @@ func lengthOfLongestSubstring(s string) int {
 	maxLen := 0
 
 	for right := 0; right < len(s); right++ {
-		if seen[s[right]] {
+		for seen[s[right]] {
 			delete(seen, s[left])
 			left++
 		}
