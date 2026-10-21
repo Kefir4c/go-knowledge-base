@@ -197,3 +197,48 @@ func largestRectangleArea(heights []int) int {
 	}
 	return maxArea
 }
+
+// Flatten Binary Tree to Linked List
+/*
+Given the root of a binary tree, flatten the tree into a "linked list":
+The "linked list" should use the same TreeNode class where the right child pointer points to the next node in the list and the left child pointer is always null.
+The "linked list" should be in the same order
+as a pre-order traversal of the binary tree.
+
+
+Example 1:
+Input: root = [1,2,5,3,4,null,6]
+Output: [1,null,2,null,3,null,4,null,5,null,6]
+
+Example 2:
+Input: root = []
+Output: []
+
+Example 3:
+Input: root = [0]
+Output: [0]
+*/
+func flatten(root *TreeNode) {
+	if root == nil {
+		return
+	}
+
+	stack := []*TreeNode{root}
+
+	for len(stack) > 0 {
+		curr := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if curr.Right != nil {
+			stack = append(stack, curr.Right)
+		}
+		if curr.Left != nil {
+			stack = append(stack, curr.Left)
+		}
+
+		if len(stack) > 0 {
+			curr.Right = stack[len(stack)-1]
+		}
+		curr.Left = nil
+	}
+}
