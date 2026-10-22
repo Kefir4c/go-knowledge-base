@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 //Simplify Path
 /*
@@ -241,4 +244,256 @@ func flatten(root *TreeNode) {
 		}
 		curr.Left = nil
 	}
+}
+
+//Reorder List
+/*
+You are given the head of a singly linked-list.
+The list can be represented as:
+L0 → L1 → … → Ln - 1 → Ln
+Reorder the list to be on the following form:
+L0 → Ln → L1 → Ln - 1 → L2 → Ln - 2 → …
+You may not modify the values in the list's nodes.
+Only nodes themselves may be changed.
+
+Example 1:
+Input: head = [1,2,3,4]
+Output: [1,4,2,3]
+
+Example 2:
+Input: head = [1,2,3,4,5]
+Output: [1,5,2,4,3]
+*/
+func reorderList(head *ListNode) {
+	if head == nil || head.Next == nil {
+		return
+	}
+
+	stack := []*ListNode{}
+	curr := head
+	for curr != nil {
+		stack = append(stack, curr)
+		curr = curr.Next
+	}
+
+	curr = head
+
+	for len(stack) > 0 {
+		last := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if curr == last || curr.Next == last {
+			last.Next = nil
+			break
+		}
+
+		next := curr.Next
+		curr.Next = last
+		last.Next = next
+
+		curr = next
+	}
+}
+
+//Evaluate Reverse Polish Notation
+/*
+You are given an array of strings tokens that represents an arithmetic expression in a Reverse Polish Notation.
+
+Evaluate the expression. Return an integer that represents the value of the expression.
+
+Note that:
+
+The valid operators are '+', '-', '*', and '/'.
+Each operand may be an integer or another expression.
+The division between two integers always truncates toward zero.
+There will not be any division by zero.
+The input represents a valid arithmetic expression in a reverse polish notation.
+The answer and all the intermediate calculations can be represented in a 32-bit integer.
+
+
+Example 1:
+Input: tokens = ["2","1","+","3","*"]
+Output: 9
+Explanation: ((2 + 1) * 3) = 9
+
+Example 2:
+Input: tokens = ["4","13","5","/","+"]
+Output: 6
+Explanation: (4 + (13 / 5)) = 6
+
+Example 3:
+Input: tokens = ["10","6","9","3","+","-11","*","/","*","17","+","5","+"]
+Output: 22
+Explanation: ((10 * (6 / ((9 + 3) * -11))) + 17) + 5
+= ((10 * (6 / (12 * -11))) + 17) + 5
+= ((10 * (6 / -132)) + 17) + 5
+= ((10 * 0) + 17) + 5
+= (0 + 17) + 5
+= 17 + 5
+= 22
+*/
+func evalRPN(tokens []string) int {
+	stack := []int{}
+
+	for _, token := range tokens {
+		switch token {
+		case "+":
+			a := stack[len(stack)-1]
+			b := stack[len(stack)-2]
+			stack = stack[:len(stack)-2]
+			stack = append(stack, b+a)
+
+		case "-":
+			a := stack[len(stack)-1]
+			b := stack[len(stack)-2]
+			stack = stack[:len(stack)-2]
+			stack = append(stack, b-a)
+
+		case "*":
+			a := stack[len(stack)-1]
+			b := stack[len(stack)-2]
+			stack = stack[:len(stack)-2]
+			stack = append(stack, b*a)
+
+		case "/":
+			a := stack[len(stack)-1]
+			b := stack[len(stack)-2]
+			stack = stack[:len(stack)-2]
+			stack = append(stack, b/a)
+
+		default:
+			num, _ := strconv.Atoi(token)
+			stack = append(stack, num)
+		}
+	}
+	return stack[0]
+}
+
+//Verify Preorder Serialization of a Binary Tree
+/*
+One way to serialize a binary tree is to use preorder traversal.
+When we encounter a non-null node, we record the node's value.
+If it is a null node, we record using a sentinel value such as '#'.
+For example, the above binary tree can be serialized to the
+string "9,3,4,#,#,1,#,#,2,#,6,#,#", where '#' represents a null node.
+Given a string of comma-separated values preorder, return true if it
+is a correct preorder traversal serialization of a binary tree.
+It is guaranteed that each comma-separated value in the string must
+be either an integer or a character '#' representing null pointer.
+You may assume that the input format is always valid.
+For example, it could never contain two consecutive commas, such as "1,,3".
+Note: You are not allowed to reconstruct the tree.
+
+Example 1:
+Input: preorder = "9,3,4,#,#,1,#,#,2,#,6,#,#"
+Output: true
+
+Example 2:
+Input: preorder = "1,#"
+Output: false
+
+Example 3:
+Input: preorder = "9,#,#,1"
+Output: false
+*/
+func isValidSerialization(preorder string) bool {
+	nodes := strings.Split(preorder, ",")
+	slots := 1
+
+	for _, node := range nodes {
+		if slots == 0 {
+			return false
+		}
+
+		if node == "#" {
+			slots--
+		} else {
+			slots--
+			slots += 2
+		}
+	}
+	return slots == 0
+}
+
+//Daily Temperatures
+/*
+Given an array of integers represents the daily temperatures,
+return an array such that is the number of days you have to
+wait after the day to get a warmer temperature. If there is
+no future day for which this is possible, keep
+instead.temperaturesansweranswer[i]ithanswer[i] == 0
+
+Example 1:
+Input: temperatures = [73,74,75,71,69,72,76,73]
+Output: [1,1,4,2,1,1,0,0]
+
+Example 2:
+Input: temperatures = [30,40,50,60]
+Output: [1,1,1,0]
+
+Example 3:
+Input: temperatures = [30,60,90]
+Output: [1,1,0]
+*/
+func dailyTemperatures(temperatures []int) []int {
+	n := len(temperatures)
+	res := make([]int, n)
+	stack := []int{}
+
+	for i, temp := range temperatures {
+		for len(stack) > 0 && temperatures[stack[len(stack)-1]] < temp {
+			curr := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+
+			res[curr] = i - curr
+		}
+
+		stack = append(stack, i)
+	}
+
+	return res
+}
+
+//Next Greater Element II
+/*
+Given a circular integer array (i.e., the next element of is ),
+return the next greater number for every element in .numsnums[nums.length - 1]nums[0]nums
+The next greater number of a number is the first greater number
+to its traversing-order next in the array, which means you could
+search circularly to find its next greater number.
+If it doesn't exist, return for this number.x-1
+
+Example 1:
+Input: nums = [1,2,1]
+Output: [2,-1,2]
+Explanation: The first 1's next greater number is 2;
+The number 2 can't find next greater number.
+The second 1's next greater number needs to search circularly, which is also 2.
+
+Example 2:
+Input: nums = [1,2,3,4,3]
+Output: [2,3,4,-1,4]
+*/
+func nextGreaterElements(nums []int) []int {
+	n := len(nums)
+	res := make([]int, n)
+	for i := range nums {
+		res[i] = -1
+	}
+	stack := []int{}
+
+	for i := 0; i < 2*n; i++ {
+		num := nums[i%n]
+
+		for len(stack) > 0 && nums[stack[len(stack)-1]] < num {
+			currIdx := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+
+			res[currIdx] = num
+		}
+		if i < n {
+			stack = append(stack, i)
+		}
+	}
+	return res
 }

@@ -121,10 +121,6 @@
 - Теория: классический, граница, по ответу.
 - Задачи: Binary Search, Search in Rotated Sorted Array, Koko Eating Bananas, Search a 2D Matrix.
 
-### День 7: Микс + mock-собес
-- 3–4 задачи из пройденного.
-- Mock: 1 задача за 30 мин вслух.
-
 ### День 8: Stack
 - Теория: LIFO, monotonic stack.
 - Задачи: Valid Parentheses, Min Stack, Daily Temperatures.
@@ -141,10 +137,6 @@
 - Теория: свойства BST, валидация, поиск, вставка, удаление.
 - Задачи: Validate BST, Lowest Common Ancestor of BST, Kth Smallest Element in BST.
 
-### День 14: Микс + mock-собес
-- 3–4 задачи: tree + linked list + stack.
-- Mock: 2 задачи за 1 час вслух.
-
 ### День 15–16: Recursion + Backtracking
 - Теория: рекурсия, дерево вызовов, backtracking.
 - Задачи: Subsets, Permutations, Combination Sum.
@@ -153,17 +145,9 @@
 - Теория: представление графа, BFS, DFS, visited, flood fill.
 - Задачи: Number of Islands, Clone Graph, Rotting Oranges, Pacific Atlantic Water Flow.
 
-### День 19: Topological sort
-- Теория: DAG, Kahn's algorithm, DFS-based topo.
-- Задачи: Course Schedule, Course Schedule II.
-
 ### День 20: Intervals
 - Теория: сортировка интервалов, пересечение, вставка.
 - Задачи: Merge Intervals, Insert Interval, Non-overlapping Intervals.
-
-### День 21: Микс + mock-собес
-- 3–4 задачи из недели.
-- Mock: 2 задачи за 1 час вслух.
 
 ### День 22: Heap
 - Теория: min-heap, max-heap, container/heap в Go.
@@ -187,7 +171,3 @@
 
 ### День 29: Strings финально
 - Задачи: Longest Palindromic Substring, Encode/Decode Strings, Group Anagrams (повтор).
-
-### День 30: Mock-собес + финал
-- Mock: 2 задачи за 1 час без подсказок.
-- Пройтись по темам, записать слабые.
