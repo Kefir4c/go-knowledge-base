@@ -293,3 +293,276 @@ func canFinish(numCourses int, prerequisites [][]int) bool {
 	}
 	return completed == numCourses
 }
+
+//Number of Provinces
+/*
+There are n cities. Some of them are connected, while some are not. If city a is connected directly with city b,
+and city b is connected directly with city c, then city a is connected indirectly with city c.
+A province is a group of directly or indirectly connected cities and no other cities outside of the group.
+You are given an n x n matrix isConnected where isConnected[i][j] = 1 if the ith city and the jth city are
+directly connected, and isConnected[i][j] = 0 otherwise. Return the total number of provinces.
+
+Example 1:
+Input: isConnected = [[1,1,0],[1,1,0],[0,0,1]]
+Output: 2
+
+Example 2:
+Input: isConnected = [[1,0,0],[0,1,0],[0,0,1]]
+Output: 3
+*/
+func findCircleNum(isConnected [][]int) int {
+	n := len(isConnected)
+	parent := make([]int, n)
+
+	for i := 0; i < n; i++ {
+		parent[i] = i
+	}
+
+	count := n
+
+	var find func(i int) int
+	find = func(i int) int {
+		if parent[i] == i {
+			return i
+		}
+		parent[i] = find(parent[i])
+		return parent[i]
+	}
+
+	union := func(i, j int) {
+		rootI := find(i)
+		rootJ := find(j)
+
+		if rootI != rootJ {
+			parent[rootI] = rootJ
+			count--
+		}
+	}
+
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			if isConnected[i][j] == 1 {
+				union(i, j)
+			}
+		}
+	}
+	return count
+}
+
+//Count Connected Components in LCM Graph
+/*
+You are given an array of integers nums of size n and a positive integer threshold.
+There is a graph consisting of n nodes with the ith node having a value of nums[i]. Two nodes i and j in the
+graph are connected via an undirected edge if lcm(nums[i], nums[j]) <= threshold.
+Return the number of connected components in this graph.
+A connected component is a subgraph of a graph in which there exists a path between any two vertices,
+and no vertex of the subgraph shares an edge with a vertex outside of the subgraph.
+The term lcm(a, b) denotes the least common multiple of a and b.
+
+Example 1:
+Input: nums = [2,4,8,3,9], threshold = 5
+Output: 4
+The four connected components are (2, 4), (3), (8), (9).
+
+Example 2:
+Input: nums = [2,4,8,3,9,12], threshold = 10
+Output: 2
+The two connected components are (2, 3, 4, 8, 9), and (12).
+*/
+type DSU struct {
+	parent []int
+	rank   []int
+}
+
+func NewDSU(n int) *DSU {
+	parent := make([]int, n+1)
+	rank := make([]int, n+1)
+	for i := 0; i <= n; i++ {
+		parent[i] = i
+		rank[i] = 0
+	}
+	return &DSU{parent: parent, rank: rank}
+}
+
+func (d *DSU) Find(x int) int {
+	if d.parent[x] != x {
+		d.parent[x] = d.Find(d.parent[x])
+	}
+	return d.parent[x]
+}
+
+func (d *DSU) Union(x, y int) bool {
+	rootX := d.Find(x)
+	rootY := d.Find(y)
+
+	if rootX != rootY {
+		if d.rank[rootX] < d.rank[rootY] {
+			d.parent[rootX] = rootY
+		} else if d.rank[rootX] > d.rank[rootY] {
+			d.parent[rootY] = rootX
+		} else {
+			d.parent[rootY] = rootX
+			d.rank[rootX]++
+		}
+		return true
+	}
+	return false
+}
+
+func countComponents(nums []int, threshold int) int {
+	dsu := NewDSU(threshold + 1)
+
+	inNums := make([]bool, threshold+1)
+	for _, num := range nums {
+		if num <= threshold {
+			inNums[num] = true
+		}
+	}
+
+	for g := 1; g <= threshold; g++ {
+		var minX int = -1
+		for x := g; x <= threshold; x += g {
+			if inNums[x] {
+				minX = x
+				break
+			}
+		}
+
+		if minX == -1 {
+			continue
+		}
+
+		for y := minX + g; y <= threshold && y*minX <= g*threshold; y += g {
+			if inNums[y] {
+				dsu.Union(minX, y)
+			}
+		}
+	}
+	uniqueRoots := make(map[int]bool)
+	for _, num := range nums {
+		if num > threshold {
+			uniqueRoots[num] = true
+		} else {
+			root := dsu.Find(num)
+			uniqueRoots[root] = true
+		}
+	}
+	return len(uniqueRoots)
+}
+
+//Is Graph Bipartite?
+/*
+There is an undirected graph with n nodes, where each node is numbered between 0 and n - 1. You are given a 2D array graph,
+where graph[u] is an array of nodes that node u is adjacent to. More formally, for each v in graph[u], there is an
+undirected edge between node u and node v. The graph has the following properties:
+There are no self-edges (graph[u] does not contain u).
+There are no parallel edges (graph[u] does not contain duplicate values).
+If v is in graph[u], then u is in graph[v] (the graph is undirected).
+The graph may not be connected, meaning there may be two nodes u and v such that there is no path between them.
+A graph is bipartite if the nodes can be partitioned into two independent sets A and B such that every
+edge in the graph connects a node in set A and a node in set B. Return true if and only if it is bipartite.
+
+Example 1:
+Input: graph = [[1,2,3],[0,2],[0,1,3],[0,2]]
+Output: false
+Explanation: There is no way to partition the nodes into two independent sets
+such that every edge connects a node in one and a node in the other.
+
+Example 2:
+Input: graph = [[1,3],[0,2],[1,3],[0,2]]
+Output: true
+Explanation: We can partition the nodes into two sets: {0, 2} and {1, 3}.
+*/
+func isBipartite(graph [][]int) bool {
+	n := len(graph)
+
+	colors := make([]int, n)
+
+	var dfs func(node, color int) bool
+	dfs = func(node, color int) bool {
+		colors[node] = color
+
+		for _, neig := range graph[node] {
+			if colors[neig] == 0 {
+				if !dfs(neig, -color) {
+					return false
+				}
+			} else if colors[neig] == color {
+				return false
+			}
+		}
+		return true
+	}
+
+	for i := 0; i < n; i++ {
+		if colors[i] == 0 {
+			if !dfs(i, 1) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+//Shortest Path in Binary Matrix
+/*
+Given an n x n binary matrix grid, return the length of the shortest clear path in the matrix. If there is no clear path, return -1.
+A clear path in a binary matrix is a path from the top-left cell (i.e., (0, 0)) to the bottom-right cell (i.e., (n - 1, n - 1)) such that:
+All the visited cells of the path are 0.
+All the adjacent cells of the path are 8-directionally connected (i.e., they are different and they share an edge or a corner).
+The length of a clear path is the number of visited cells of this path.
+
+Example 1:
+Input: grid = [[0,1],[1,0]]
+Output: 2
+
+Example 2:
+Input: grid = [[0,0,0],[1,1,0],[1,1,0]]
+Output: 4
+
+Example 3:
+Input: grid = [[1,0,0],[1,1,0],[1,1,0]]
+Output: -1
+*/
+func shortestPathBinaryMatrix(grid [][]int) int {
+	n := len(grid)
+
+	if grid[0][0] == 1 || grid[n-1][n-1] == 1 {
+		return -1
+	}
+
+	queue := [][2]int{{0, 0}}
+	grid[0][0] = 1
+
+	dirs := [][]int{
+		{1, 0}, {-1, 0}, {0, 1}, {0, -1},
+		{1, 1}, {1, -1}, {-1, 1}, {-1, -1},
+	}
+
+	pathLen := 1
+
+	for len(queue) > 0 {
+		levelSize := len(queue)
+
+		for i := 0; i < levelSize; i++ {
+			curr := queue[0]
+			queue = queue[1:]
+			r, c := curr[0], curr[1]
+
+			if r == n-1 && c == n-1 {
+				return pathLen
+			}
+
+			for _, d := range dirs {
+				nr, nc := r+d[0], c+d[1]
+
+				if nr >= 0 && nr < n && nc >= 0 && nc < n && grid[nr][nc] == 0 {
+					grid[nr][nc] = 1
+					queue = append(queue, [2]int{nr, nc})
+				}
+			}
+		}
+		pathLen++
+	}
+	return -1
+}

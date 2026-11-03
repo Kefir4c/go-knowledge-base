@@ -155,11 +155,7 @@
 
 ### День 23–24: DP 1D
 - Теория: memoization, tabulation, состояния, переходы.
-- Задачи: Climbing Stairs, House Robber, Coin Change, Longest Increasing Subsequence.
-
-### День 25: DP 2D (база)
-- Теория: сетка, LCS, 0/1 knapsack.
-- Задачи: Unique Paths, Longest Common Subsequence.
+- Задачи: Climbing Stairs, House Robber, Coin Change, Longest Increasing Subsequence, *Unique Paths
 
 ### День 26–27: Go-concurrency
 - Теория: горутины, каналы, select, sync, context, errgroup.
