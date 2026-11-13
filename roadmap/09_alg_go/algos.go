@@ -1,5 +1,10 @@
 package _9_alg_go
 
+import (
+	"sort"
+	"strconv"
+)
+
 // Spiral Matrix
 func spiralOrder(matrix [][]int) []int {
 	if len(matrix) == 0 {
@@ -102,4 +107,147 @@ func maxArea(height []int) int {
 		}
 	}
 	return maxArea
+}
+
+// 3Sum
+func threeSum(nums []int) [][]int {
+	n := len(nums)
+	sort.Ints(nums)
+	res := [][]int{}
+
+	for i := 0; i < n-2; i++ {
+
+		if i > 0 && nums[i] == nums[i-1] {
+			continue
+		}
+
+		left := i + 1
+		right := n - 1
+
+		for left < right {
+			sum := nums[i] + nums[left] + nums[right]
+
+			if sum == 0 {
+				res = append(res, []int{nums[i], nums[left], nums[right]})
+
+				for left < right && nums[left] == nums[left+1] {
+					left++
+				}
+				for left < right && nums[right] == nums[right-1] {
+					right--
+				}
+				left++
+				right--
+			} else if sum < 0 {
+				left++
+			} else {
+				right--
+			}
+		}
+	}
+	return res
+}
+
+// Minimum Size Subarray Sum
+func minSubArrayLen(target int, nums []int) int {
+	n := len(nums)
+	minLen := n + 1
+	left, currSum := 0, 0
+
+	for right := 0; right < n; right++ {
+		currSum += nums[right]
+
+		for currSum >= target {
+
+			if right-left+1 < minLen {
+				minLen = right - left + 1
+			}
+
+			currSum -= nums[left]
+			left++
+		}
+	}
+	if minLen == n+1 {
+		return 0
+	}
+	return minLen
+}
+
+// Daily Temperatures
+func dailyTemperatures(temperatures []int) []int {
+	n := len(temperatures)
+	res := make([]int, n)
+	stack := []int{}
+
+	for i := 0; i < n; i++ {
+		for len(stack) > 0 && temperatures[i] > temperatures[stack[len(stack)-1]] {
+			curr := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+
+			res[curr] = i - curr
+
+		}
+		stack = append(stack, i)
+	}
+	return res
+}
+
+// Evaluate Reverse Polish Notation
+func evalRPN(tokens []string) int {
+	stack := []int{}
+
+	for _, token := range tokens {
+		if token == "+" || token == "-" || token == "/" || token == "*" {
+			b := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+
+			a := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+
+			var result int
+			switch token {
+			case "+":
+				result = a + b
+			case "-":
+				result = a - b
+			case "*":
+				result = a * b
+			case "/":
+				result = a / b
+			}
+			stack = append(stack, result)
+		} else {
+			num, _ := strconv.Atoi(token)
+			stack = append(stack, num)
+		}
+	}
+	return stack[0]
+}
+
+//Merge Intervals
+func merge(intervals [][]int) [][]int {
+	if len(intervals) == 0 {
+		return [][]int{}
+	}
+
+	sort.Slice(intervals, func(i, j int) bool {
+		return intervals[i][0] < intervals[j][0]
+	})
+
+	res := [][]int{intervals[0]}
+
+	for i := 1; i < len(intervals); i++ {
+		current := intervals[i]
+		lastAdded := res[len(res)-1]
+
+		if current[0] <= lastAdded[1] {
+			if current[1] > lastAdded[1] {
+				lastAdded[1] = current[1]
+			}
+		} else {
+			res = append(res, current)
+		}
+	}
+
+	return res
 }
