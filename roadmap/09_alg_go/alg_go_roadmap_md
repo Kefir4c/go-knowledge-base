@@ -1,71 +1,63 @@
 # ROADMAP АЛГОРИТМОВ И GO ЗАДАЧ (30 ДНЕЙ)
 
-## GO-ЗАДАЧИ (спрашивают на собесе)
+## GO-ЗАДАЧИ
 
-### Concurrency (обязательно)
+##TIER 1: CONCURRENCY
 
-- [ ] **Worker Pool** — N воркеров, M задач, результаты в канал
+- [ ] **Worker Pool** — N воркеров, M задач, результаты в канал (с поддержкой `context` для отмены)
 - [ ] **Fan-in** — merge N каналов в один
 - [ ] **Fan-out** — один канал в N обработчиков
 - [ ] **Pipeline** — 3+ стадии через каналы
-- [ ] **Rate Limiter** — token bucket через time.Ticker
-- [ ] **Graceful Shutdown** — SIGTERM + context + WaitGroup
+- [ ] **Graceful Shutdown** — полный цикл: `SIGTERM` -> `context` -> `srv.Shutdown` -> `wg.Wait` -> закрытие БД
+- [ ] **Rate Limiter** — token bucket через `time.Ticker`
 - [ ] **Semaphore** — ограничение параллелизма через буферизованный канал
-- [ ] **Retry с backoff** — экспоненциальная задержка
-- [ ] **Merge N каналов** — dynamic merge с select
-- [ ] **Timeout wrapper** — context.WithTimeout вокруг функции
-- [ ] **Concurrent Map** — map + sync.RWMutex
-- [ ] **Atomic counter** — sync/atomic
+- [ ] **Merge N каналов** — dynamic merge с `select`
+- [ ] **Context Cancellation** — отмена долгой операции, если клиент ушёл (не путать с Timeout)
+- [ ] **errgroup** — `golang.org/x/sync/errgroup` (WaitGroup с обработкой ошибок и отменой)
+- [ ] **Retry с backoff** — экспоненциальная задержка + `context`
+- [ ] **Timeout wrapper** — `context.WithTimeout` вокруг функции
 
-### Структуры данных (реализовать самому)
+##TIER 2: ПАТТЕРНЫ И СТРУКТУРЫ
 
-- [ ] **Stack** — на slice
-- [ ] **Queue** — на slice
-- [ ] **Ring Buffer** — фиксированный с перезаписью
-- [ ] **LRU Cache** — container/list + map
-- [ ] **Set** — на map
-- [ ] **Binary Tree** — вставка, обход, поиск
-- [ ] **Trie** — префиксное дерево
-- [ ] **Min/Max Heap** — через container/heap
-- [ ] **In-memory KV с TTL** — map + time.AfterFunc
+- [ ] **Concurrent Map** — map + `sync.RWMutex` (или `sync.Map`, если знаешь когда его использовать)
+- [ ] **Atomic counter** — `sync/atomic`
+- [ ] **LRU Cache** — `container/list` + map
+- [ ] **In-memory KV с TTL** — map + `time.AfterFunc` или горутина-чистильщик
+- [ ] **Singleton** — `sync.Once`
+- [ ] **Option pattern** — функциональные опции (как в gRPC)
+- [ ] **sync.Pool** — переиспользование объектов, когда имеет смысл
 
-### Строки
+##TIER 3: GOTCHAS И ЛОВУШКИ (НУЖНО ЗНАТЬ НАИЗУСТЬ)
 
-- [ ] **Reverse string** — с учётом rune
-- [ ] **Palindrome check** — с rune
-- [ ] **Anagram check** — hash map
-- [ ] **Reverse words** — "hello world" → "world hello"
-- [ ] **Compress string** — "aaabbc" → "a3b2c1"
-- [ ] **Join через strings.Builder** — почему быстрее +
+- [ ] **Закрытый канал** — паника при записи, нулевое значение при чтении. Кто должен закрывать?
+- [ ] **Nil-канал** — блокировка навсегда при чтении/записи
+- [ ] **select + default** — неблокирующее чтение
+- [ ] **Interface nil check** — почему `err != nil` может быть true, даже если внутри nil (тип + значение)
+- [ ] **Slice underlying array** — почему `append` может изменить оригинальный массив (`a[1:3]`)
+- [ ] **Map concurrent access** — почему нельзя писать в map из разных горутин (panic)
+- [ ] **panic / recover** — когда использовать (и почему только в `defer`)
 
-### Ошибки и интерфейсы
+## TIER 4: ОШИБКИ, HTTP И СТРОКИ
 
+### Ошибки
 - [ ] **Custom error** — структура с полями
-- [ ] **Wrapping** — fmt.Errorf с %w
-- [ ] **errors.Is / errors.As**
-- [ ] **Sentinel error** — var ErrNotFound
-- [ ] **Middleware chain** — http.Handler обёртки
-- [ ] **Stringer** — String() string
+- [ ] **Wrapping** — `fmt.Errorf` с `%w`
+- [ ] **errors.Is / errors.As** — как проверять обёрнутые ошибки
+- [ ] **Sentinel error** — `var ErrNotFound = errors.New(...)`
 
 ### HTTP / Context
-
 - [ ] **HTTP сервер** — простой REST API
-- [ ] **Middleware** — logging, recovery, auth
-- [ ] **Graceful shutdown HTTP** — srv.Shutdown + context
-- [ ] **Context propagation** — через слои
-- [ ] **Context timeout** — WithTimeout
+- [ ] **Middleware chain** — logging, recovery, auth (обёртки над `http.Handler`)
+- [ ] **Graceful shutdown HTTP** — `srv.Shutdown(ctx)`
+- [ ] **HTTP Client с Timeout** — `http.Client{Timeout: ...}` (частая ошибка — забывают)
 
-### Паттерны
-
-- [ ] **Singleton** — sync.Once
-- [ ] **Option pattern** — функциональные опции
-- [ ] **Decorator** — обёртка над интерфейсом
-- [ ] **Observer** — подписка через каналы
+### Строки
+- [ ] **Reverse words** — "hello world" -> "world hello"
+- [ ] **Compress string** — "aaabbc" -> "a3b2c1"
+- [ ] **strings.Builder** — понимать, почему `+` в цикле — это O(n^2)
 
 ---
-
 ## ТОП-10 GO-ЗАДАЧ
-
 1. **Worker Pool** — почти 
 2. **Fan-in / Fan-out** — очень часто
 3. **Graceful Shutdown** — часто

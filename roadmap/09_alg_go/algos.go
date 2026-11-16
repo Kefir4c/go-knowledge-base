@@ -224,7 +224,7 @@ func evalRPN(tokens []string) int {
 	return stack[0]
 }
 
-//Merge Intervals
+// Merge Intervals
 func merge(intervals [][]int) [][]int {
 	if len(intervals) == 0 {
 		return [][]int{}
