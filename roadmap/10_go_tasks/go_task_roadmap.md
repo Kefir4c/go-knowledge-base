@@ -3,13 +3,13 @@
 ## TIER 1: CONCURRENCY
 
 - [x] **Worker Pool** — N воркеров, M задач, результаты в канал (с поддержкой `context` для отмены)
-- [ ] **Fan-in** — merge N каналов в один
-- [ ] **Fan-out** — один канал в N обработчиков
-- [ ] **Pipeline** — 3+ стадии через каналы
-- [ ] **Graceful Shutdown** — полный цикл: `SIGTERM` -> `context` -> `srv.Shutdown` -> `wg.Wait` -> закрытие БД
-- [ ] **Rate Limiter** — token bucket через `time.Ticker` (потом взглянуть `golang.org/x/time/rate`)
-- [ ] **Semaphore** — ограничение параллелизма через буферизованный канал
-- [ ] **errgroup** — `golang.org/x/sync/errgroup` (WaitGroup с обработкой ошибок и отменой)
+- [x] **Fan-in** — merge N каналов в один
+- [x] **Fan-out** — один канал в N обработчиков
+- [x] **Pipeline** — 3+ стадии через каналы
+- [x] **Graceful Shutdown** — полный цикл: `SIGTERM` -> `context` -> `srv.Shutdown` -> `wg.Wait` -> закрытие БД
+- [x] **Rate Limiter** — token bucket через `time.Ticker` (потом взглянуть `golang.org/x/time/rate`)
+- [x] **Semaphore** — ограничение параллелизма через буферизованный канал
+- [x] **errgroup** — `golang.org/x/sync/errgroup` (WaitGroup с обработкой ошибок и отменой)
 - [ ] **Context Cancellation** — отмена долгой операции, если клиент ушёл (не путать с Timeout)
 - [ ] **Timeout wrapper** — `context.WithTimeout` вокруг функции (per-task таймаут в worker pool)
 - [ ] **Retry с backoff** — экспоненциальная задержка + `context`
