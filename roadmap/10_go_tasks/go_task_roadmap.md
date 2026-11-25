@@ -16,10 +16,10 @@
 
 ## TIER 2: ПАТТЕРНЫ И СТРУКТУРЫ
 
-- [ ] **LRU Cache** — `container/list` + map + `sync.Mutex`.
-- [ ] **Concurrent Map** — map + `sync.RWMutex` (или `sync.Map`).
-- [ ] **In-memory KV с TTL** — map + `time.AfterFunc` или горутина-чистильщик.
-- [ ] **HTTP Middleware** — logging, recovery (panic), auth (обертки над `http.Handler`).
+- [x] **LRU Cache** — `container/list` + map + `sync.Mutex`.
+- [x] **Concurrent Map** — map + `sync.RWMutex` (или `sync.Map`).
+- [x] **In-memory KV с TTL** — map + `time.AfterFunc` или горутина-чистильщик.
+- [x] **HTTP Middleware** — logging, recovery (panic), auth (обертки над `http.Handler`).
 - [ ] **HTTP Сервис** — REST API + graceful shutdown + `ReadTimeout`/`WriteTimeout`.
 - [ ] **Atomic counter** — `sync/atomic`.
 - [ ] **Generics** — базово: обобщённый `Filter`/`Map`, `comparable`.
