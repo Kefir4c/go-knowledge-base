@@ -1,3 +1,5 @@
+//go:build ignore
+
 package __3_bidirectional
 
 import (

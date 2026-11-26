@@ -1,3 +1,5 @@
+//go:build ignore
+
 package __1_server_streaming
 
 import (
