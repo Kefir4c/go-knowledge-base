@@ -20,7 +20,7 @@
 - [x] **Concurrent Map** — map + `sync.RWMutex` (или `sync.Map`).
 - [x] **In-memory KV с TTL** — map + `time.AfterFunc` или горутина-чистильщик.
 - [x] **HTTP Middleware** — logging, recovery (panic), auth (обертки над `http.Handler`).
-- [ ] **HTTP Сервис** — REST API + graceful shutdown + `ReadTimeout`/`WriteTimeout`.
+- [x] **HTTP Сервис** — REST API + graceful shutdown + `ReadTimeout`/`WriteTimeout`.
 - [ ] **Atomic counter** — `sync/atomic`.
 - [ ] **Generics** — базово: обобщённый `Filter`/`Map`, `comparable`.
 
